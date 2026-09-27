@@ -9,9 +9,9 @@ import {
   renderMermaid,
   type ChangeReport,
   type VerifiedChangeReport,
-} from "@tacet/core";
-import { TacetWorkspace, createAiProvider } from "@tacet/cli";
-import type { AiProvider } from "@tacet/core";
+} from "@api-tacet/core";
+import { TacetWorkspace, createAiProvider } from "@api-tacet/cli";
+import type { AiProvider } from "@api-tacet/core";
 
 export interface TacetToolOptions {
   /** Index database. Defaults to .tacet/index.db (relative to the server's cwd). */

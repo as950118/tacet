@@ -1,5 +1,5 @@
 {
-  "name": "@tacet/extractor-typescript",
+  "name": "@api-tacet/extractor-typescript",
   "version": "0.1.0",
   "description": "Tacet TypeScript frontend extractor (ts-morph): API calls and response field reads",
   "keywords": [
@@ -43,7 +43,7 @@
     "build": "tsc -b tsconfig.json"
   },
   "dependencies": {
-    "@tacet/core": "^0.1.0",
+    "@api-tacet/core": "^0.1.0",
     "ts-morph": "^28.0.0"
   }
 }

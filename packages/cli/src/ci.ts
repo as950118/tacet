@@ -7,7 +7,7 @@ import {
   type ChangeReport,
   type ContractReport,
   type VerifiedChangeReport,
-} from "@tacet/core";
+} from "@api-tacet/core";
 import { TacetWorkspace } from "./workspace.js";
 
 export type ImpactFailOn = "definite" | "likely" | "possible" | "never";

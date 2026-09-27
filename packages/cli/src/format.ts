@@ -1,4 +1,4 @@
-import { groupErrors } from "@tacet/core";
+import { groupErrors } from "@api-tacet/core";
 import type {
   ApiImpact,
   ChangeReport,
@@ -9,7 +9,7 @@ import type {
   FileImpact,
   ImpactSummary,
   SearchHit,
-} from "@tacet/core";
+} from "@api-tacet/core";
 import type { ExtractBackendResult, IndexFrontendResult } from "./workspace.js";
 
 export function formatIndexResult(r: IndexFrontendResult): string {

@@ -1,6 +1,6 @@
 import { Project, SyntaxKind } from "ts-morph";
 import { describe, expect, it } from "vitest";
-import { normalizePath } from "@tacet/core";
+import { normalizePath } from "@api-tacet/core";
 import { resolveEndpointExpression, resolveUrlQueryKeys } from "../src/endpoint.js";
 
 function resolveArg(code: string): string | null {

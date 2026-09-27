@@ -1,4 +1,4 @@
-# @tacet/mcp
+# @api-tacet/mcp
 
 [Tacet](https://github.com/heonjinjeong/tacet) as MCP tools: check a TypeScript frontend against a Spring Boot API,
 and see what an API, file or field change would affect.
@@ -10,7 +10,7 @@ and see what an API, file or field change would affect.
   "mcpServers": {
     "tacet": {
       "command": "npx",
-      "args": ["-y", "@tacet/mcp", "--index", "/abs/project/.tacet/index.db",
+      "args": ["-y", "@api-tacet/mcp", "--index", "/abs/project/.tacet/index.db",
                "--frontend", "/abs/project/frontend", "--backend", "/abs/project/backend"]
     }
   }
@@ -21,7 +21,7 @@ and see what an API, file or field change would affect.
 
 ```ts
 import { FastMCP } from "fastmcp";
-import { addTacetTools } from "@tacet/mcp";
+import { addTacetTools } from "@api-tacet/mcp";
 
 const server = new FastMCP({ name: "my-tools", version: "1.0.0" });
 addTacetTools(server, { frontendDir: "./frontend", backendDir: "./backend", prefix: "tacet_" });

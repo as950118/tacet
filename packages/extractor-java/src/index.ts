@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SubprocessExtractor, type BackendManifest, type LanguageExtractor } from "@tacet/core";
+import { SubprocessExtractor, type BackendManifest, type LanguageExtractor } from "@api-tacet/core";
 
 export const DEFAULT_JAR_PATH = fileURLToPath(
   new URL("../jvm/build/libs/tacet-java-extractor.jar", import.meta.url),
@@ -31,7 +31,7 @@ export class JavaExtractor implements LanguageExtractor<BackendManifest> {
     if (!existsSync(this.jarPath)) {
       throw new Error(
         `Java extractor JAR not found at ${this.jarPath}. ` +
-          `Build it with "npm run build:jar -w @tacet/extractor-java" or set TACET_JAVA_EXTRACTOR_JAR.`,
+          `Build it with "npm run build:jar -w @api-tacet/extractor-java" or set TACET_JAVA_EXTRACTOR_JAR.`,
       );
     }
     return new SubprocessExtractor<BackendManifest>({

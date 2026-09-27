@@ -6,11 +6,11 @@ const src = (pkg: string) => fileURLToPath(new URL(`./packages/${pkg}/src/index.
 export default defineConfig({
   resolve: {
     alias: {
-      "@tacet/core": src("core"),
-      "@tacet/extractor-typescript": src("extractor-typescript"),
-      "@tacet/extractor-java": src("extractor-java"),
-      "@tacet/cli": src("cli"),
-      "@tacet/ai-anthropic": src("ai-anthropic"),
+      "@api-tacet/core": src("core"),
+      "@api-tacet/extractor-typescript": src("extractor-typescript"),
+      "@api-tacet/extractor-java": src("extractor-java"),
+      "@api-tacet/cli": src("cli"),
+      "@api-tacet/ai-anthropic": src("ai-anthropic"),
     },
   },
   test: {

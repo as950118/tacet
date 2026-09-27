@@ -1,5 +1,5 @@
 {
-  "name": "@tacet/extractor-java",
+  "name": "@api-tacet/extractor-java",
   "version": "0.1.0",
   "description": "Tacet Spring Boot extractor (JavaParser): endpoints and DTO JSON shapes",
   "keywords": [
@@ -45,6 +45,6 @@
     "prepack": "npm run build:jar"
   },
   "dependencies": {
-    "@tacet/core": "^0.1.0"
+    "@api-tacet/core": "^0.1.0"
   }
 }

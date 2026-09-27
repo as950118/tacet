@@ -8,7 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { FastMCP } from "fastmcp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DEFAULT_JAR_PATH } from "@tacet/extractor-java";
+import { DEFAULT_JAR_PATH } from "@api-tacet/extractor-java";
 import { addTacetTools, createTacetTools } from "../src/index.js";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));

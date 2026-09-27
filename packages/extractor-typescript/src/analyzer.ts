@@ -6,7 +6,7 @@ import {
   type DataFlowKind,
   type HttpMethod,
   type RequestShape,
-} from "@tacet/core";
+} from "@api-tacet/core";
 import { objectLiteralKeys, resolveEndpointExpression, resolveUrlQueryKeys } from "./endpoint.js";
 
 /**

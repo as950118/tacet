@@ -18,9 +18,9 @@ import {
   type FrontendIndexUpdate,
   type FrontendManifest,
   type VerifiedChangeReport,
-} from "@tacet/core";
-import { JavaExtractor } from "@tacet/extractor-java";
-import { TypeScriptProject } from "@tacet/extractor-typescript";
+} from "@api-tacet/core";
+import { JavaExtractor } from "@api-tacet/extractor-java";
+import { TypeScriptProject } from "@api-tacet/extractor-typescript";
 import { changedSourceFiles, hasChangesBetween, materializeAtRef } from "./git.js";
 
 export const DEFAULT_INDEX_PATH = ".tacet/index.db";

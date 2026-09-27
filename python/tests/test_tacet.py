@@ -114,7 +114,7 @@ def test_falls_back_to_the_matching_npm_release(tmp_path, monkeypatch):
 
     monkeypatch.delenv("TACET_CLI")
     monkeypatch.setattr(client.shutil, "which", lambda name: "/usr/bin/npx" if name == "npx" else None)
-    assert client._default_command() == ["/usr/bin/npx", "--yes", f"@tacet/cli@{tacet.__version__}"]
+    assert client._default_command() == ["/usr/bin/npx", "--yes", f"@api-tacet/cli@{tacet.__version__}"]
 
 
 def test_verify_builds_the_cli_call(tmp_path):

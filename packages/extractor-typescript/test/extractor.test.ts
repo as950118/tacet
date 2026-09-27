@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { FrontendManifest, PropertyAccessInfo } from "@tacet/core";
-import { loadConfig } from "@tacet/core";
+import type { FrontendManifest, PropertyAccessInfo } from "@api-tacet/core";
+import { loadConfig } from "@api-tacet/core";
 import { cpSync, readFileSync } from "node:fs";
 import { extractTypeScriptManifest, TypeScriptProject } from "../src/index.js";
 

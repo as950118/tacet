@@ -63,7 +63,7 @@ public class TacetCheckMojo extends AbstractMojo {
     @Parameter(property = "tacet.aiModel")
     private String aiModel;
 
-    /** CLI invocation. Default: tacet on PATH, else npx --yes @tacet/cli at this plugin's version. */
+    /** CLI invocation. Default: tacet on PATH, else npx --yes @api-tacet/cli at this plugin's version. */
     @Parameter
     private List<String> command;
 

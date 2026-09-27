@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
-import type { AiVerificationRequest } from "@tacet/core";
+import type { AiVerificationRequest } from "@api-tacet/core";
 import { AiVerificationError, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL } from "../src/index.js";
 
 const REQUEST: AiVerificationRequest = {
