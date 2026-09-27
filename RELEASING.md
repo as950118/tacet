@@ -4,7 +4,7 @@
 
 | 레지스트리 | 산출물 | 이름 |
 |---|---|---|
-| npm | 6개 패키지 | `@api-tacet/core`, `@api-tacet/extractor-typescript`, `@api-tacet/extractor-java`(JAR 포함), `@api-tacet/ai-anthropic`, `@api-tacet/cli`, `@api-tacet/mcp` |
+| npm | 6개 패키지 | `@tacet-api/core`, `@tacet-api/extractor-typescript`, `@tacet-api/extractor-java`(JAR 포함), `@tacet-api/ai-anthropic`, `@tacet-api/cli`, `@tacet-api/mcp` |
 | PyPI | wheel + sdist | `tacet` (import `tacet`) |
 | Maven Central | Maven 플러그인 | `io.github.heonjinjeong:tacet-maven-plugin` |
 | Gradle Plugin Portal | Gradle 플러그인 | `io.github.heonjinjeong.tacet` |

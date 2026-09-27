@@ -1,5 +1,5 @@
 {
-  "name": "@api-tacet/ai-anthropic",
+  "name": "@tacet-api/ai-anthropic",
   "version": "0.1.0",
   "description": "Claude provider for Tacet AI verification",
   "keywords": [
@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
-    "@api-tacet/core": "^0.1.0",
+    "@tacet-api/core": "^0.1.0",
     "zod": "^4.1.13"
   }
 }

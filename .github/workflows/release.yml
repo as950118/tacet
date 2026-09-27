@@ -55,7 +55,7 @@ jobs:
         run: |
           for pkg in core extractor-typescript extractor-java ai-anthropic cli mcp; do
             cp LICENSE "packages/$pkg/LICENSE"
-            npm publish -w "@api-tacet/$pkg"
+            npm publish -w "@tacet-api/$pkg"
           done
 
   pypi:

@@ -1,5 +1,5 @@
 import { Node, SyntaxKind } from "ts-morph";
-import { normalizePath, PARAM_PLACEHOLDER } from "@api-tacet/core";
+import { normalizePath, PARAM_PLACEHOLDER } from "@tacet-api/core";
 
 /**
  * Statically resolves the URL argument of an API call into a path pattern.

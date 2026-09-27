@@ -39,7 +39,7 @@ public abstract class TacetExtension {
 
     public abstract Property<String> getAiModel();
 
-    /** CLI invocation. Default: {@code tacet} on PATH, else {@code npx --yes @api-tacet/cli@VERSION} (this plugin's version). */
+    /** CLI invocation. Default: {@code tacet} on PATH, else {@code npx --yes @tacet-api/cli@VERSION} (this plugin's version). */
     public abstract ListProperty<String> getCommand();
 
     /** Report problems without failing the build. Default: false. */

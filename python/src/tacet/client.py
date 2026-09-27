@@ -30,10 +30,10 @@ def _default_command() -> list[str]:
         return [found]
     npx = shutil.which("npx")
     if npx:
-        return [npx, "--yes", f"@api-tacet/cli@{__version__}"]
+        return [npx, "--yes", f"@tacet-api/cli@{__version__}"]
     raise TacetError(
         "Tacet CLI not found. Install Node.js 22.13+ (the CLI then runs through npx), "
-        "`npm install -g @api-tacet/cli`, or set TACET_CLI, "
+        "`npm install -g @tacet-api/cli`, or set TACET_CLI, "
         'e.g. TACET_CLI="node /path/to/tacet/packages/cli/dist/bin.js".'
     )
 

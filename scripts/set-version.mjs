@@ -25,7 +25,7 @@ const targets = [
       const json = JSON.parse(text);
       json.version = version;
       for (const deps of [json.dependencies, json.devDependencies]) {
-        for (const name of Object.keys(deps ?? {})) if (name.startsWith("@api-tacet/")) deps[name] = `^${version}`;
+        for (const name of Object.keys(deps ?? {})) if (name.startsWith("@tacet-api/")) deps[name] = `^${version}`;
       }
       return JSON.stringify(json, null, 2) + "\n";
     },

@@ -6,7 +6,7 @@ import {
   type AiProvider,
   type AiVerificationRequest,
   type AiVerificationResponse,
-} from "@api-tacet/core";
+} from "@tacet-api/core";
 
 export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5";
 

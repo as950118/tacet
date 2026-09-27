@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DEFAULT_JAR_PATH } from "@api-tacet/extractor-java";
-import type { AiProvider, AiVerificationRequest } from "@api-tacet/core";
+import { DEFAULT_JAR_PATH } from "@tacet-api/extractor-java";
+import type { AiProvider, AiVerificationRequest } from "@tacet-api/core";
 import { runCi } from "../src/ci.js";
 import { TacetWorkspace } from "../src/workspace.js";
 

@@ -1,6 +1,6 @@
 // Adding Tacet to an existing TypeScript fastmcp server.
 import { FastMCP } from "fastmcp";
-import { addTacetTools } from "@api-tacet/mcp";
+import { addTacetTools } from "@tacet-api/mcp";
 
 const server = new FastMCP({ name: "my-dev-tools", version: "1.0.0" });
 

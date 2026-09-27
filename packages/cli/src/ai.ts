@@ -1,5 +1,5 @@
-import type { AiProvider } from "@api-tacet/core";
-import { AnthropicProvider, type Effort } from "@api-tacet/ai-anthropic";
+import type { AiProvider } from "@tacet-api/core";
+import { AnthropicProvider, type Effort } from "@tacet-api/ai-anthropic";
 
 export const AI_PROVIDERS = ["anthropic"] as const;
 export type AiProviderName = (typeof AI_PROVIDERS)[number];

@@ -18,7 +18,7 @@ import java.util.function.Consumer;
 
 /**
  * Runs `tacet ci` for the Gradle and Maven plugins. The analysis itself lives in the Tacet CLI
- * (npm package {@code @api-tacet/cli}); this class only locates it, builds the arguments and runs it.
+ * (npm package {@code @tacet-api/cli}); this class only locates it, builds the arguments and runs it.
  */
 public final class TacetRunner {
     private TacetRunner() {}
@@ -40,10 +40,10 @@ public final class TacetRunner {
         Optional<Path> tacet = findExecutable("tacet", path);
         if (tacet.isPresent()) return List.of(tacet.get().toString());
         Optional<Path> npx = findExecutable("npx", path);
-        if (npx.isPresent()) return List.of(npx.get().toString(), "--yes", "@api-tacet/cli@" + version());
+        if (npx.isPresent()) return List.of(npx.get().toString(), "--yes", "@tacet-api/cli@" + version());
         throw new IllegalStateException(
-                "Tacet CLI not found. Install Node.js 22.13+ (the plugin then runs @api-tacet/cli through npx), "
-                        + "run `npm install -g @api-tacet/cli`, or set the plugin's `command` option.");
+                "Tacet CLI not found. Install Node.js 22.13+ (the plugin then runs @tacet-api/cli through npx), "
+                        + "run `npm install -g @tacet-api/cli`, or set the plugin's `command` option.");
     }
 
     /** Arguments for `tacet ci`, after the CLI command itself. */

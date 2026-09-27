@@ -9,14 +9,14 @@ AI는 정적으로 확정할 수 없는 부분을 검증하는 데만 쓴다. �
 
 | 사용처 | 설치 |
 |---|---|
-| CLI (npm) | `npm install -g @api-tacet/cli` → `tacet ...` |
-| MCP 서버 | `npx -y @api-tacet/mcp --frontend ... --backend ...` |
-| Node/TS 라이브러리 | `npm install @api-tacet/cli` (`TacetWorkspace`, `runCi`) / `@api-tacet/mcp` |
+| CLI (npm) | `npm install -g @tacet-api/cli` → `tacet ...` |
+| MCP 서버 | `npx -y @tacet-api/mcp --frontend ... --backend ...` |
+| Node/TS 라이브러리 | `npm install @tacet-api/cli` (`TacetWorkspace`, `runCi`) / `@tacet-api/mcp` |
 | Python / FastMCP | `pip install "tacet[fastmcp]"` (import 이름 `tacet`) |
 | Gradle | `plugins { id("io.github.heonjinjeong.tacet") version "0.1.0" }` |
 | Maven | `io.github.heonjinjeong:tacet-maven-plugin:0.1.0` |
 
-모든 형태가 같은 CLI(`@api-tacet/cli`)를 실행한다. Python과 Gradle/Maven 플러그인은 `tacet`가 PATH에 없으면
+모든 형태가 같은 CLI(`@tacet-api/cli`)를 실행한다. Python과 Gradle/Maven 플러그인은 `tacet`가 PATH에 없으면
 같은 버전을 `npx`로 자동 실행하므로, 실행 환경에 Node.js 22.13+(와 backend 분석용 Java 17+)만 있으면 된다.
 
 ### Gradle
@@ -258,7 +258,7 @@ PR 코멘트(갱신)로 남기고, 기준 이상이면 job을 실패시킨다. �
 
 ```ts
 import { FastMCP } from "fastmcp";
-import { addTacetTools } from "@api-tacet/mcp";
+import { addTacetTools } from "@tacet-api/mcp";
 
 const server = new FastMCP({ name: "my-dev-tools", version: "1.0.0" });
 addTacetTools(server, { frontendDir: "./frontend", backendDir: "./backend", prefix: "tacet_" });
@@ -276,7 +276,7 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
 ```
 
 다른 MCP 프레임워크에는 `createTacetTools()`(zod schema + JSON 반환 handler)를, 코드에서 직접 쓸 때는
-`TacetWorkspace`(`@api-tacet/cli`)를 사용한다. workspace는 파싱된 frontend를 메모리에 유지해서 반복 갱신이 빠르다.
+`TacetWorkspace`(`@tacet-api/cli`)를 사용한다. workspace는 파싱된 frontend를 메모리에 유지해서 반복 갱신이 빠르다.
 
 ### tacet.config.json
 

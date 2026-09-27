@@ -18,7 +18,7 @@ import {
   type LanguageExtractor,
   type PropertyAccessInfo,
   type SourceLocation,
-} from "@api-tacet/core";
+} from "@tacet-api/core";
 import {
   DataFlowAnalyzer,
   isFunctionLike,

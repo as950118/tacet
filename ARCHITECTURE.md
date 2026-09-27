@@ -21,7 +21,7 @@ AI는 핵심 분석 엔진이 아니라 Verification Layer이며, AI 없이도 1
                       └────────────┬─────────────┘
                                    │
                       ┌────────────▼─────────────┐
-                      │  @api-tacet/core            │
+                      │  @tacet-api/core            │
                       │  (language-agnostic)      │
                       │  - IR schema              │
                       │  - Index store (SQLite)   │
@@ -146,7 +146,7 @@ URL은 정적으로 해석 가능한 경우만 패턴화한다: 문자열, 템�
 ## 5. Java API 분석 방법 (Phase 2, 구현됨)
 
 `packages/extractor-java/jvm` — JavaParser 기반 독립 JAR. `java -jar tacet-java-extractor.jar <backendDir>` →
-stdout에 `BackendManifest` JSON. Node 쪽 `@api-tacet/extractor-java`가 `SubprocessExtractor`로 실행한다.
+stdout에 `BackendManifest` JSON. Node 쪽 `@tacet-api/extractor-java`가 `SubprocessExtractor`로 실행한다.
 JDK 17+에서 동작하며 CLI는 `tacet extract-backend <dir>`.
 
 **이름 해석은 소스만으로 한다.** JavaSymbolSolver는 정확한 해석을 위해 Spring·Lombok 등 의존성 JAR 전체를 classpath로
@@ -325,13 +325,13 @@ endpoint ──has-field──▶ field ──reads──▶ reading fn/componen
 ## 12. Library / MCP (구현됨)
 
 ```text
-                 ┌───────────────────────── @api-tacet/mcp ─────────────────────────┐
+                 ┌───────────────────────── @tacet-api/mcp ─────────────────────────┐
  MCP client ───▶ │ tacet-mcp (stdio, 공식 SDK)   addTacetTools(fastmcp server) │
                  │            └──────── createTacetTools() ─────────┘           │
                  └──────────────────────────────┬─────────────────────────────────┘
  Python FastMCP ─▶ tacet (python) ─▶ CLI --format json ─┐
                                                           ▼
-                                   TacetWorkspace (@api-tacet/cli) ─▶ @api-tacet/core + extractors
+                                   TacetWorkspace (@tacet-api/cli) ─▶ @tacet-api/core + extractors
 ```
 
 - **`createTacetTools(options)`**: 프레임워크 중립 tool 정의(zod schema + JSON 결과 handler, read-only annotation).

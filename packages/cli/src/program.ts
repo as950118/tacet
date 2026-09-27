@@ -13,7 +13,7 @@ import {
   type VerifiedChangeReport,
   type GraphAttachment,
   type ImpactGraph,
-} from "@api-tacet/core";
+} from "@tacet-api/core";
 import {
   formatApiImpact,
   formatChangeReport,
@@ -25,7 +25,7 @@ import {
   formatSearch,
   formatSummary,
 } from "./format.js";
-import type { Effort } from "@api-tacet/ai-anthropic";
+import type { Effort } from "@tacet-api/ai-anthropic";
 import { AI_PROVIDERS, createAiProvider } from "./ai.js";
 import { runCi, type CheckFailOn, type VerifyFailOn } from "./ci.js";
 import { TacetWorkspace, DEFAULT_INDEX_PATH } from "./workspace.js";
