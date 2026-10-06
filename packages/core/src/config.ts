@@ -17,6 +17,12 @@ export interface TacetConfig {
   /** Explicit mapping from API client calls (e.g. "userApi.getUser") to backend endpoints. */
   apiClientMap?: Record<string, ApiClientMapping>;
   linking?: LinkingConfig;
+  /**
+   * Explicit pages, for routers Tacet does not recognize: route path → page file, optionally with the
+   * component name, e.g. { "/users/:id": "src/pages/User.tsx#UserPage" }. Without a name the file's
+   * default export (or its only exported component) is used.
+   */
+  routes?: Record<string, string>;
 }
 
 export function loadConfig(configPath: string | undefined): TacetConfig {

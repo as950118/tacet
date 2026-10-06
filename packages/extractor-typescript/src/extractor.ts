@@ -23,9 +23,11 @@ import {
   DataFlowAnalyzer,
   isFunctionLike,
   nodeLocation,
+  resolveFunctionNode,
   type FunctionLike,
   type TrackedValue,
 } from "./analyzer.js";
+import { extractRoutes } from "./routes.js";
 
 const MAX_CODE_LENGTH = 200;
 
@@ -119,6 +121,7 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
     functions: [],
     apiCalls: [],
     propertyAccesses: [],
+    routes: [],
   };
   const accesses = new Map<string, PropertyAccessInfo>();
   const recordAccess = (node: Node, value: TrackedValue, object: string, code: string): void => {
@@ -141,13 +144,23 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
     manifest.files.push(fileInfo(file, rel, locationOf));
 
     const callsByFunction = new Map<string, Set<string>>();
+    const invokesByFunction = new Map<string, Set<string>>();
+    const rendersByFunction = new Map<string, Set<string>>();
+    const addTo = (map: Map<string, Set<string>>, owner: string, value: string): void => {
+      (map.get(owner) ?? map.set(owner, new Set()).get(owner)!).add(value);
+    };
     file.forEachDescendant((node) => {
+      if (Node.isJsxOpeningElement(node) || Node.isJsxSelfClosingElement(node)) {
+        const owner = functionIdOf(node);
+        const component = resolveFunctionNode(node.getTagNameNode());
+        if (owner && component) addTo(rendersByFunction, owner, idOf("fn", component));
+      }
       if (Node.isCallExpression(node)) {
         const owner = functionIdOf(node);
         if (owner) {
-          const set = callsByFunction.get(owner) ?? new Set<string>();
-          set.add(truncate(node.getExpression().getText()));
-          callsByFunction.set(owner, set);
+          addTo(callsByFunction, owner, truncate(node.getExpression().getText()));
+          const callee = resolveFunctionNode(node.getExpression());
+          if (callee) addTo(invokesByFunction, owner, idOf("fn", callee));
         }
         const target = analyzer.classifyCall(node);
         if (target) {
@@ -197,6 +210,9 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
         calls: [...(callsByFunction.get(id) ?? [])],
         location: locationOf(fn),
         containingComponent: componentOf(fn),
+        parentId: functionIdOf(fn.getParentOrThrow()),
+        invokes: [...(invokesByFunction.get(id) ?? [])].filter((target) => target !== id),
+        renders: [...(rendersByFunction.get(id) ?? [])],
       });
     }
   }
@@ -204,6 +220,17 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
   for (const access of analyzer.recordedDestructuringAccesses) {
     recordAccess(access.node, access.value, access.object, firstLine(access.code));
   }
+
+  manifest.routes = extractRoutes({
+    root,
+    files,
+    config,
+    rel,
+    locationOf,
+    functionId: (fn) => idOf("fn", fn),
+    functionName,
+    isComponent,
+  });
 
   const apiCallIds = new Set(manifest.apiCalls.map((c) => c.id));
   manifest.propertyAccesses = [...accesses.values()]

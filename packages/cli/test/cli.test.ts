@@ -192,6 +192,18 @@ describe.skipIf(!hasJar || !existsSync(bin))("tacet CLI", () => {
     expect(readFileSync(html, "utf8")).toContain("<title>Tacet impact graph</title>");
   });
 
+  it("renders the ontology: page → API text, JSON, Turtle and the HTML explorer", () => {
+    const text = run("ontology", "-f", "text").stdout;
+    expect(text).toContain("Pages → APIs (2):");
+    expect(text).toMatch(/✓ GET \/users\/\{id\}\s+UserPage/);
+    const ontology = JSON.parse(run("ontology", "-f", "json", "--focus", "UserCard").stdout);
+    expect(ontology.entities.map((e: { label: string }) => e.label)).toEqual(expect.arrayContaining(["UserCard", "UserResponse.name"]));
+    expect(run("ontology", "-f", "turtle").stdout).toContain("tacet:usesApi a owl:ObjectProperty");
+    const html = join(dir, "ontology.html");
+    expect(run("ontology", "-o", html).status).toBe(0);
+    expect(readFileSync(html, "utf8")).toContain("<title>Tacet ontology</title>");
+  });
+
   it("reports frontend impact of backend changes and fails on definite impact", () => {
     const text = run("analyze", "--backend", join(fixtures, "backend-v2"));
     expect(text.status).toBe(1);

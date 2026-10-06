@@ -9,6 +9,7 @@ export type {
   ExtractBackendResult,
   IndexFrontendOptions,
   IndexFrontendResult,
+  OntologyQueryOptions,
   VerifiedGitChangeReport,
   VerifyChangesOptions,
 } from "./workspace.js";

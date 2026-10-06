@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * The index is a cache of extractor manifests: every row keeps the full IR
@@ -10,6 +10,7 @@ export const TABLES = [
   "functions",
   "api_calls",
   "property_accesses",
+  "routes",
   "endpoints",
   "dtos",
   "enums",
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS api_calls (
   id TEXT PRIMARY KEY, file TEXT NOT NULL, method TEXT, endpoint_pattern TEXT, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS property_accesses (
   id TEXT PRIMARY KEY, file TEXT NOT NULL, api_call_id TEXT NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS routes (id TEXT PRIMARY KEY, file TEXT NOT NULL, json TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS endpoints (
   id TEXT PRIMARY KEY, file TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, json TEXT NOT NULL);

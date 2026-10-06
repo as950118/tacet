@@ -10,6 +10,7 @@ import type {
   FrontendManifest,
   FunctionInfo,
   PropertyAccessInfo,
+  RouteInfo,
 } from "../ir/types.js";
 import { SCHEMA_SQL, SCHEMA_VERSION, TABLES } from "./schema.js";
 
@@ -130,6 +131,11 @@ export class IndexStore {
           columns: { api_call_id: a.apiCallId },
           value: a,
         })),
+        changed,
+      );
+      this.sync(
+        "routes",
+        (manifest.routes ?? []).map((r) => ({ id: r.id, file: r.file, columns: {}, value: r })),
         changed,
       );
       this.setMeta("language", manifest.language);
@@ -262,6 +268,10 @@ export class IndexStore {
     return this.rows("SELECT json FROM property_accesses ORDER BY file, id");
   }
 
+  listRoutes(): RouteInfo[] {
+    return this.rows("SELECT json FROM routes ORDER BY id");
+  }
+
   findApiCallsByEndpoint(method: string, endpointPattern: string): ApiCallInfo[] {
     return this.rows(
       "SELECT json FROM api_calls WHERE method = ? AND endpoint_pattern = ? ORDER BY file, id",
@@ -285,6 +295,7 @@ export class IndexStore {
       functions: this.listFunctions(),
       apiCalls: this.listApiCalls(),
       propertyAccesses: this.listPropertyAccesses(),
+      routes: this.listRoutes(),
     };
   }
 

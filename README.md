@@ -155,6 +155,35 @@ tacet impact --api "GET /users/{id}" -f mermaid              # PR 코멘트용 M
 HTML 그래프는 API → 응답 필드 → 함수/컴포넌트 → 파일의 계층 그래프다. 노드를 클릭하면 연결된 전체를 추적하고,
 검색과 종류 필터, 검색 가능한 목록을 제공한다. 외부 리소스 없이 단일 파일로 동작한다.
 
+### 4-1. Ontology — 어떤 페이지가 어떤 API와 연결되어 있나
+
+```bash
+tacet ontology                                  # .tacet/ontology.html (인터랙티브 탐색기)
+tacet ontology -f text                          # 페이지 → API, API → 페이지 목록
+tacet ontology --focus "/users/:id" -f mermaid  # 특정 페이지/컴포넌트/API/DTO 주변만
+tacet ontology -f turtle -o tacet.ttl           # RDF/OWL (triple store, SPARQL)
+tacet ontology -f json                          # entities + triples + page→API 행
+```
+
+```text
+Pages → APIs (3):
+  /users/:id  UserPage  src/App.tsx
+    ✓ GET /users/{id}
+        via UserPage → getUser
+        reads age, name
+```
+
+프로젝트를 엔티티(Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto, DtoField, Enum, File)와
+관계(`showsComponent`, `renders`, `calls`, `requests`, `reads`, `handledBy`, `accepts`, `returns`, `hasField`, `typedAs`,
+`definedIn`)로 표현한다. 관계마다 근거 코드 위치가 붙고, `usesApi`(페이지 → API)는 이 관계들을 따라가 추론한다.
+읽는 응답 필드는 실제 DTO 필드(`Profile.email`)에 연결된다.
+
+페이지는 React Router(`<Route>` JSX, route 객체, `lazy`), Next.js(`pages/`, `app/**/page.tsx`), Remix/React Router
+`app/routes/`에서 찾는다. 인식하지 못하는 router는 `tacet.config.json`의 `routes`로 지정하고, router가 하나도 없으면
+`pages/`·`views/`·`screens/` 디렉터리의 export된 컴포넌트를 (경로 없는) 페이지로 본다.
+
+HTML 탐색기: class별 레인 그래프(클래스·관계 필터, 클릭 시 연결 추적과 근거), Page × API 매트릭스, triple 표, schema 다이어그램.
+
 ### 5. Backend API 변경 → Frontend 영향
 
 ```bash
@@ -236,7 +265,7 @@ PR 코멘트(갱신)로 남기고, 기준 이상이면 job을 실패시킨다. �
 
 같은 기능을 MCP tool로 제공한다. tool: `index_frontend`, `extract_backend`, `check_contract`,
 `analyze_api_changes`, `diff_api_changes`, `verify_api_changes`, `impact_of_api`,
-`impact_of_file`, `impact_of_field`, `search`, `impact_summary`, `render_graph`.
+`impact_of_file`, `impact_of_field`, `search`, `impact_summary`, `render_graph`, `page_apis`, `ontology`.
 
 **독립 MCP 서버 (stdio)** — Claude Desktop / Claude Code 등에 바로 연결:
 
@@ -285,12 +314,14 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
   "apiClientMap": {
     "productApi.getProduct": { "method": "GET", "path": "/products/{id}" }
   },
-  "linking": { "frontendBasePath": "/api", "backendBasePath": "" }
+  "linking": { "frontendBasePath": "/api", "backendBasePath": "" },
+  "routes": { "/users/:id": "src/pages/User.tsx#UserPage" }
 }
 ```
 
 - `apiClientMap`: endpoint를 자동 추론할 수 없는 API client(예: 제네릭 `request({ method, url })` 헬퍼)의 명시적 매핑.
 - `linking`: frontend HTTP client의 baseURL, backend context-path 등 prefix 차이.
+- `routes`: 자동 인식되지 않는 router의 페이지. `경로 → 파일[#컴포넌트]` (컴포넌트 생략 시 default export).
 
 ## 로드맵
 
@@ -299,6 +330,7 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
 | 1 | TypeScript AST 분석 + Index | ✅ |
 | 2 | Java Spring API 분석 (JavaParser) | ✅ |
 | 3 | Backend API ↔ Frontend 호출 연결, contract check, incremental index, 영향 범위 탐색·그래프 | ✅ |
+| - | Ontology: 페이지 ↔ 컴포넌트 ↔ API ↔ Controller ↔ DTO 관계 (HTML, RDF/Turtle, MCP) | ✅ |
 | 4 | API 변경 감지 | ✅ |
 | 5 | Static impact analysis (DEFINITE / LIKELY / POSSIBLE) | ✅ |
 | 6 | AI verification (provider 추상화, Anthropic 구현, evidence 검증) | ✅ |

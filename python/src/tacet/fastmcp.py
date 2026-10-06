@@ -93,6 +93,25 @@ def register_tools(mcp: Any, lens: Tacet | None = None, *, prefix: str = "", **l
         "mermaid" returns flowchart text; "html" writes an interactive page and returns its path."""
         return lens.render_graph(format, api=api, file=file, field=field, out=out_path)
 
+    def page_apis(page: str | None = None, api: str | None = None) -> list[dict[str, Any]]:
+        """Which page uses which API. For each page (React Router / Next.js / Remix routes, `routes` in
+        tacet.config.json, or components in pages/ views/ screens/): the APIs it requests or shows, the
+        component → function chain, and the response fields read. Filter with `page` or `api` (substring);
+        with `api` the rows are grouped by API."""
+        return lens.page_apis(page=page, api=api)
+
+    def ontology(
+        focus: str | None = None,
+        depth: int = 2,
+        format: Literal["json", "mermaid", "turtle"] = "json",
+        include_files: bool = False,
+    ) -> Any:
+        """The project as typed entities (Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto,
+        DtoField, Enum, File) and subject–predicate–object triples (showsComponent, renders, calls, requests, reads,
+        usesApi [inferred], handledBy, accepts, returns, hasField, typedAs, definedIn) with file:line evidence.
+        `focus` limits it to the neighborhood of an entity; "turtle" is RDF/OWL for triple stores and SPARQL."""
+        return lens.ontology(focus=focus, depth=depth, format=format, include_files=include_files)
+
     tools: list[tuple[Callable[..., Any], bool]] = [
         (index_frontend, False),
         (extract_backend, False),
@@ -106,6 +125,8 @@ def register_tools(mcp: Any, lens: Tacet | None = None, *, prefix: str = "", **l
         (search, True),
         (impact_summary, True),
         (render_graph, False),
+        (page_apis, True),
+        (ontology, True),
     ]
     names = []
     for fn, read_only in tools:

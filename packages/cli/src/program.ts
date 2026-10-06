@@ -6,6 +6,9 @@ import {
   mergeGraphs,
   renderHtml,
   renderMermaid,
+  renderOntologyHtml,
+  renderOntologyMermaid,
+  renderOntologyTurtle,
   renderChangeReportMarkdown,
   renderContractReportMarkdown,
   type ChangeReport,
@@ -22,6 +25,7 @@ import {
   formatFieldImpact,
   formatFileImpact,
   formatIndexResult,
+  formatOntology,
   formatSearch,
   formatSummary,
 } from "./format.js";
@@ -32,7 +36,7 @@ import { TacetWorkspace, DEFAULT_INDEX_PATH } from "./workspace.js";
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
-type Format = "text" | "json" | "mermaid" | "html" | "markdown";
+type Format = "text" | "json" | "mermaid" | "html" | "markdown" | "turtle";
 type ImpactFailOn = "definite" | "likely" | "possible" | "never";
 type FailOn = "error" | "warning" | "never";
 
@@ -183,6 +187,36 @@ export function buildProgram(): Command {
       const graph = analyzer.fullGraph();
       const out = opts.out ?? (opts.format === "html" ? ".tacet/graph.html" : undefined);
       emit(render(opts.format, { value: graph, text: "", graph, title: "Tacet impact graph" }), out);
+    });
+
+  program
+    .command("ontology")
+    .description("Pages, components, functions, APIs, controllers and DTOs as an ontology: which page uses which API, and how")
+    .option("--focus <query>", "only the neighborhood of matching entities (a route, component, API, DTO, …)")
+    .option("--depth <n>", "with --focus: relations to follow from the matches", (v) => Number.parseInt(v, 10), 2)
+    .option("--no-files", "leave out File entities and definedIn relations")
+    .option("--all", "keep frontend functions that lead to no API")
+    .addOption(formatOption(["html", "text", "json", "mermaid", "turtle"], "html"))
+    .option("-o, --out <path>", "output file (default .tacet/ontology.html for html)")
+    .action((opts: { focus?: string; depth: number; files: boolean; all?: boolean; format: Format; out?: string }) => {
+      const ontology = workspace().ontology({
+        focus: opts.focus,
+        depth: opts.depth,
+        includeFiles: opts.files,
+        includeUnrelated: opts.all,
+      });
+      const title = opts.focus ? `Tacet ontology: ${opts.focus}` : "Tacet ontology";
+      const output =
+        opts.format === "json"
+          ? JSON.stringify(ontology, null, 2)
+          : opts.format === "turtle"
+            ? renderOntologyTurtle(ontology)
+            : opts.format === "mermaid"
+              ? renderOntologyMermaid(ontology)
+              : opts.format === "text"
+                ? formatOntology(ontology, opts.focus)
+                : renderOntologyHtml(ontology, { title, subtitle: `${ontology.pages.length} pages · ${ontology.stats.entities.Endpoint ?? 0} APIs · ${ontology.stats.triples} triples` });
+      emit(output, opts.out ?? (opts.format === "html" ? ".tacet/ontology.html" : undefined));
     });
 
   const impactFailOn = () =>

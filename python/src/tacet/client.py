@@ -146,6 +146,55 @@ class Tacet:
         """What changing a frontend file can affect: its APIs, client functions and their callers, importers."""
         return self._run(["impact", "--file", file, "--format", "json", "--graph", graph])
 
+    def ontology(
+        self,
+        *,
+        focus: str | None = None,
+        depth: int = 2,
+        include_files: bool = True,
+        include_unrelated: bool = False,
+        format: Literal["json", "turtle", "mermaid", "text"] = "json",
+    ) -> Any:
+        """Pages, components, functions, APIs, controllers and DTOs as entities and subject-predicate-object triples.
+
+        `format="json"` returns {schema, entities, triples, pages, stats}; `pages` is the page -> API map.
+        "turtle" (RDF/OWL), "mermaid" and "text" return a string."""
+        args = ["ontology", "--depth", str(depth)]
+        if focus:
+            args += ["--focus", focus]
+        if not include_files:
+            args.append("--no-files")
+        if include_unrelated:
+            args.append("--all")
+        if format == "json":
+            return self._run([*args, "--format", "json"])
+        return self._run_text([*args, "--format", format])
+
+    def page_apis(self, *, page: str | None = None, api: str | None = None) -> list[dict[str, Any]]:
+        """Which page uses which API: per page, the APIs it requests or shows, the call chain and the fields read.
+
+        `page` / `api` filter by substring; with `api` the rows are grouped by API (each with its pages)."""
+        ontology = self.ontology(include_files=False)
+        if api:
+            q = api.lower()
+            rows: dict[str, dict[str, Any]] = {}
+            for e in ontology["entities"]:
+                if e["class"] == "Endpoint" and q in e["label"].lower():
+                    rows[e["id"]] = {"endpoint": e["id"], "apiKey": e["label"], "status": e["status"], "pages": []}
+            for p in ontology["pages"]:
+                for use in p["apis"]:
+                    if use["endpoint"] in rows:
+                        rows[use["endpoint"]]["pages"].append(
+                            {"page": p["page"], "route": p["route"], "component": p["component"],
+                             "via": use["via"], "fields": use["fields"]}
+                        )
+            return sorted(rows.values(), key=lambda r: r["apiKey"])
+        pages = ontology["pages"]
+        if page:
+            q = page.lower()
+            pages = [p for p in pages if q in (p["route"] or "").lower() or q in p["component"].lower()]
+        return pages
+
     def impact_of_field(self, field: str, *, graph: GraphMode = "none") -> list[dict[str, Any]]:
         """Every endpoint returning a DTO field (e.g. "UserResponse.name") and every frontend read of it."""
         return self._run(["impact", "--field", field, "--format", "json", "--graph", graph])

@@ -90,12 +90,15 @@ Frontend (Phase 1 구현):
 | 타입 | 주요 필드 |
 |---|---|
 | `FileInfo` | path, imports(**resolvedFile**: tsconfig paths까지 해석된 프로젝트 파일), exports |
-| `FunctionInfo` | id, name, params, returnType, calls, containingComponent |
+| `FunctionInfo` | id, name, params, returnType, calls, containingComponent, **parentId**, **invokes**, **renders** |
+| `RouteInfo` | path(없으면 null), componentId, component, **source**, file, location |
 | `ApiCallInfo` | endpointPattern, method, calleeExpression, **resolution**, **wrapperFunctionId**, callerFunctionId, location, arguments, **request**(queryKeys, bodyKeys), returnVarType, code |
 | `PropertyAccessInfo` | apiCallId, object, **path (response body 기준)**, **flow**, location, containingFunctionId, containingComponent, code |
 
 - `resolution`: `direct`(axios/fetch 직접 호출) · `wrapper`(API 호출 결과를 반환하는 함수 호출, 예: `getUser(id)`) · `config`(apiClientMap)
 - `wrapperFunctionId`: wrapper 호출이 거치는 API client 함수. graph에서 `API → getUser → UserPage` 사슬과 "이 파일의 client 함수를 누가 쓰나"에 사용.
+- `invokes` / `renders`: import를 따라 해석된 프로젝트 함수 호출과 JSX로 렌더하는 컴포넌트의 function id. `parentId`는 감싸는 함수(콜백 → 컴포넌트). ontology의 `calls`/`renders` 관계가 된다.
+- `RouteInfo.source`: `react-router`(`<Route path element>` JSX, `{ path, element | Component | lazy, children }` 객체, `React.lazy`) · `file-system`(Next.js `pages/`·`app/**/page.tsx`, Remix/React Router `app/routes/`, `package.json` 의존성으로 판단) · `config`(`tacet.config.json`의 `routes`) · `convention`(router가 하나도 없을 때 `pages/`·`views/`·`screens/` 디렉터리의 export된 컴포넌트, path = null). element 안에 감싼 컴포넌트가 있으면 가장 안쪽 프로젝트 컴포넌트를 페이지로 본다(`<RequireAuth><Dashboard/></RequireAuth>` → Dashboard).
 - `request`: 정적으로 알 수 있는 query key(URL의 `?a=`, axios `params`)와 body key(object literal). 알 수 없으면 `null` — 추측하지 않는다.
 - `path`: **응답 body 기준 경로**. `res.data.user.name`(axios)이나 `(await res.json()).user.name`(fetch) 모두 `["user","name"]`로 저장된다. 배열 원소는 `"[]"`. 따라서 Phase 5에서 DTO 필드와 바로 비교할 수 있다.
 - `flow`: `direct`(응답 body임이 증명됨) · `derived`(추적 불가한 함수를 거침, 예: `transform(user).name`) → Phase 5에서 DEFINITE/POSSIBLE 판정의 근거가 된다.
@@ -190,6 +193,7 @@ files(id, file, json)
 functions(id, file, name, json)
 api_calls(id, file, method, endpoint_pattern, json)
 property_accesses(id, file, api_call_id, json)
+routes(id, file, json)
 endpoints(id, file, method, path, json)
 dtos(id, file, name, json)
 enums(id, file, name, json)
@@ -321,6 +325,30 @@ endpoint ──has-field──▶ field ──reads──▶ reading fn/componen
 각 노드에 영향 수(endpoint/field: 하위 파일 수, 함수/파일: 상위 API 수)를 계산한다. 출력:
 - `--format html`: 외부 요청 없는 단일 HTML. 계층 레이아웃, 검색, 종류 필터, 노드 클릭 시 상·하류 추적과 상세 패널, 검색 가능한 목록, 라이트/다크.
 - `--format mermaid`: PR 코멘트·문서용. `--format json`: 다른 도구용.
+
+**Ontology** (`core/src/analysis/ontology.ts`, `core/src/report/ontology.ts`) — `tacet ontology`
+
+graph가 "API 변경의 영향"을 보는 뷰라면, ontology는 프로젝트 전체를 **타입이 있는 엔티티와 관계(subject–predicate–object)**로
+표현한다. "어떤 페이지가 어떤 API와 연동되어 있나"가 주 질문이다.
+
+| Class | 출처 |
+|---|---|
+| Page | `RouteInfo` |
+| Component / Hook / ApiClient / Function | `FunctionInfo` (중첩 함수·콜백은 감싸는 module-level 함수로 합친다). HTTP 요청을 보내는 함수 = ApiClient |
+| Endpoint / Controller | backend `EndpointInfo`(handler의 class = Controller). backend에 없는 호출은 frontend 기준 key로 |
+| Dto / DtoField / Enum | backend DTO와 JSON 필드 |
+| File | 정의 위치 |
+
+```text
+Page ─showsComponent▶ Component ─renders▶ Component ─calls▶ ApiClient ─requests▶ Endpoint ─handledBy▶ Controller
+Component ─reads▶ DtoField ◀hasField─ Dto ◀returns/accepts─ Endpoint        DtoField ─typedAs▶ Dto | Enum
+Page ┄usesApi┄▶ Endpoint   (추론: showsComponent/renders/calls/requests를 따라 도달 + 방문한 코드가 읽는 응답 필드의 API)
+```
+
+- 관계마다 evidence(file:line, 코드)를 최대 5개 남긴다. `usesApi`는 `inferred: true`이고 `via`에 페이지→API 경로를 담는다.
+- 읽는 경로는 `checkPath`로 응답 타입을 따라가 **실제 DTO 필드**에 연결한다(`profile.email` → `Profile.email`). 해석되지 않으면 Endpoint에 연결.
+- 기본으로 API에 닿지 않는 frontend 함수는 제외한다(`--all`로 포함). `focusOntology(query, depth)`는 엔티티 주변만 잘라낸다.
+- 출력: `json`(entities, triples, pages, stats) · `html`(class 레인 그래프 + 술어 필터 + 클릭 추적, Page×API 매트릭스, triple 표, schema 다이어그램; 외부 요청 없음) · `mermaid` · `turtle`(OWL class/ObjectProperty의 domain·range + 개체; Jena·GraphDB 등에서 SPARQL) · `text`.
 
 ## 12. Library / MCP (구현됨)
 

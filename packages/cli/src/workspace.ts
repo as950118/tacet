@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   analyzeChangeImpact,
+  buildOntology,
   checkContract,
+  focusOntology,
   verifyChangeReport,
   ImpactAnalyzer,
   IndexStore,
@@ -17,6 +19,8 @@ import {
   type ContractReport,
   type FrontendIndexUpdate,
   type FrontendManifest,
+  type Ontology,
+  type OntologyOptions,
   type VerifiedChangeReport,
 } from "@tacet-api/core";
 import { JavaExtractor } from "@tacet-api/extractor-java";
@@ -117,6 +121,13 @@ const EMPTY_INPUTS = {
   before: EMPTY_BACKEND,
   after: EMPTY_BACKEND,
 };
+
+export interface OntologyQueryOptions extends OntologyOptions {
+  /** Only the neighborhood of entities matching this (a page route, component, API, DTO, …). */
+  focus?: string;
+  /** With `focus`: how many relations away from the matches to include (default 2). */
+  depth?: number;
+}
 
 export interface CheckOptions {
   files?: string[];
@@ -272,6 +283,12 @@ export class TacetWorkspace {
 
   impact(): ImpactAnalyzer {
     return new ImpactAnalyzer(this.model());
+  }
+
+  /** Pages, components, functions, APIs, controllers and DTOs, and how they connect (subject–predicate–object). */
+  ontology(options: OntologyQueryOptions = {}): Ontology {
+    const ontology = buildOntology(this.model(), options);
+    return options.focus ? focusOntology(ontology, options.focus, options.depth) : ontology;
   }
 
   /** Converts user-supplied paths (cwd-relative, absolute or root-relative) to index paths. */
