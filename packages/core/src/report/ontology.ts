@@ -216,12 +216,22 @@ export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOpti
 </section>
 
 <section id="tab-matrix" class="tab" hidden>
+  <div id="pa-summary" class="pa-summary"></div>
   <div class="toolbar">
-    <label class="check"><input id="matrix-all" type="checkbox"> Show APIs no page uses</label>
+    <div class="segmented" role="group" aria-label="View">
+      <button data-mode="pages" aria-pressed="true">Pages → APIs</button>
+      <button data-mode="apis" aria-pressed="false">APIs → pages</button>
+      <button data-mode="matrix" aria-pressed="false" id="mode-matrix" hidden>Matrix</button>
+    </div>
+    <input id="pa-filter" type="search" placeholder="Filter…" autocomplete="off">
+    <label class="check"><input id="pa-broken" type="checkbox"> Only with broken APIs</label>
+    <label class="check" id="pa-unused-wrap" hidden><input id="pa-unused" type="checkbox"> Include APIs no page uses</label>
   </div>
-  <div class="scroll"><table id="matrix" class="matrix"></table></div>
-  <h2 class="section">API → pages</h2>
-  <div class="scroll"><table id="api-pages"></table></div>
+  <main class="pa-main" id="pa-main">
+    <aside class="nav"><div id="pa-count" class="muted small"></div><div id="pa-list" class="page-list"></div></aside>
+    <section id="pa-detail" class="pa-detail"></section>
+  </main>
+  <div class="scroll" id="pa-matrix-wrap" hidden><table id="matrix" class="matrix"></table></div>
 </section>
 
 <section id="tab-triples" class="tab" hidden>
@@ -387,6 +397,51 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .matrix td.cell span.read { background: transparent; border: 2px solid var(--accent); }
 .matrix th.page { white-space: nowrap; }
 h2.section { font-size: 14px; margin: 20px 24px 8px; }
+.pa-summary { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 24px 12px; }
+.pa-summary button { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; color: var(--text);
+  font: inherit; cursor: pointer; min-width: 120px; }
+.pa-summary button b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.pa-summary button span { color: var(--muted); font-size: 12px; }
+.pa-summary button.alert b { color: var(--broken); }
+.pa-summary button[aria-pressed="true"] { border-color: var(--accent); }
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.segmented button { border: 0; background: none; color: var(--muted); font: inherit; padding: 7px 12px; cursor: pointer; }
+.segmented button + button { border-left: 1px solid var(--line); }
+.segmented button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); font-weight: 600; }
+#pa-filter { flex: 1 1 220px; max-width: 420px; }
+.pa-main { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 12px; padding: 0 24px 32px; }
+@media (max-width: 900px) { .pa-main { grid-template-columns: 1fr; } .pa-main .nav { max-height: 280px; } }
+@media (max-width: 600px) { .pa-main, .pa-summary { padding-left: 16px; padding-right: 16px; } }
+.group-head { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; gap: 8px; width: 100%; border: 0; text-align: left;
+  font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; color: var(--muted); background: var(--panel); padding: 8px 8px 4px; cursor: pointer;
+  border-bottom: 1px solid var(--line); }
+.group-head .n { font-variant-numeric: tabular-nums; }
+.group-head .n .bad { color: var(--broken); margin-left: 6px; }
+.pa-detail { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; min-width: 0; max-height: 76vh; overflow: auto; }
+.pa-detail .head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; justify-content: space-between; margin-bottom: 12px; }
+.pa-detail h3 { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 16px; word-break: break-all; }
+.pa-detail .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; word-break: break-all; }
+.pa-detail .counts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.pa-detail .actions button { border: 1px solid var(--accent); color: var(--accent); background: none; border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; }
+.pa-detail h4 { margin: 16px 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+.use { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; background: var(--bg); }
+.use.bad { border-color: color-mix(in srgb, var(--broken) 55%, var(--line)); background: color-mix(in srgb, var(--broken) 7%, var(--bg)); }
+.use summary { display: flex; gap: 10px; align-items: center; padding: 8px 10px; cursor: pointer; list-style: none; min-width: 0; }
+.use summary::-webkit-details-marker { display: none; }
+.use summary::before { content: "▸"; color: var(--muted); font-size: 11px; }
+.use[open] summary::before { content: "▾"; }
+.use .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; flex: 1; min-width: 0; }
+.use .path small { display: block; color: var(--muted); font-family: inherit; }
+.use .body { padding: 2px 12px 12px 30px; font-size: 12.5px; }
+.method { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 700; border-radius: 4px; padding: 1px 6px; min-width: 52px;
+  text-align: center; color: #fff; flex: none; }
+.method.GET { background: #2f7d4f; } .method.POST { background: #3b6fd8; } .method.PUT { background: #b07400; } .method.PATCH { background: #8a5cd8; }
+.method.DELETE { background: #c23b3b; } .method.ANY { background: #6b6b70; }
+.steps { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0 8px; }
+.steps .step { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
+.steps .arr { color: var(--muted); font-size: 11px; }
+.fields { display: flex; flex-wrap: wrap; gap: 4px; }
+.fields code { font-size: 11.5px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--line); white-space: nowrap; }
 .pill.broken { color: var(--broken); border-color: var(--broken); }
 .pill.unused { color: var(--unused); }
@@ -840,13 +895,212 @@ const SCRIPT = `
     }
   }
 
-  // ================================================================ matrix
+  // ================================================================ page ↔ API
+  var paMode = "pages", paSelected = { pages: null, apis: null }, collapsed = new Set();
+  var endpointsById = new Map(entities.filter(function (e) { return e.class === "Endpoint"; }).map(function (e) { return [e.id, e]; }));
+  var usesByApi = new Map();
+  O.pages.forEach(function (p) { p.apis.forEach(function (a) { push(usesByApi, a.endpoint, { page: p, use: a }); }); });
+  function isBrokenUse(a) { return a.status === "not-found" || a.status === "method-mismatch"; }
+  var pageItems = O.pages.map(function (p) {
+    var bad = p.apis.filter(isBrokenUse).length;
+    return { id: p.page, p: p, bad: bad, group: pageGroup(p.route), text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
+  });
+  var apiItems = Array.from(endpointsById.values()).map(function (e) {
+    var uses = usesByApi.get(e.id) || [];
+    return { id: e.id, e: e, uses: uses, bad: broken(e) ? 1 : 0, group: apiGroup(e), text: (e.label + " " + (e.detail || "")).toLowerCase() };
+  });
+  /** "/vsphere/datacenter/:id" → "/vsphere". */
+  function pageGroup(route) {
+    if (route === null || route === undefined) return "(no path)";
+    var seg = route.split("/").filter(Boolean)[0];
+    return seg ? "/" + seg : "/";
+  }
+  /** "GET /admin/v1/inventory/vsphere/datacenters" → "inventory/vsphere": the path without method, role and version segments. */
+  function apiGroup(e) {
+    var path = (e.attributes && e.attributes.path) || e.label.split(" ").slice(1).join(" ");
+    var segs = String(path).split("/").filter(function (x) {
+      return x && x.charAt(0) !== "{" && x.charAt(0) !== "<" && !/^(api|admin|user|common|console|v\\d+)$/.test(x);
+    });
+    return segs.slice(0, 2).join("/") || "(root)";
+  }
+  function splitKey(label) { var i = label.indexOf(" "); return i > 0 ? { method: label.slice(0, i), path: label.slice(i + 1) } : { method: "ANY", path: label }; }
+  function methodBadge(method) { return el("span", "method " + (/^(GET|POST|PUT|PATCH|DELETE)$/.test(method) ? method : "ANY"), method); }
+
+  var usedApiCount = apiItems.filter(function (a) { return a.uses.length; }).length;
+  var brokenApis = apiItems.filter(function (a) { return a.bad && a.uses.length; }).length;
+  var pagesWithBroken = pageItems.filter(function (p) { return p.bad; }).length;
+  var small = O.pages.length <= 40 && usedApiCount <= 80;
+  document.getElementById("mode-matrix").hidden = !small || !O.pages.length;
+
+  function summary() {
+    var box = document.getElementById("pa-summary"); box.textContent = "";
+    [["Pages", O.pages.length, "pages", false], ["APIs used by pages", usedApiCount, "apis", false],
+     ["Pages with broken APIs", pagesWithBroken, "pages", true], ["Broken APIs in use", brokenApis, "apis", true]].forEach(function (x) {
+      var b = el("button", x[3] && x[1] ? "alert" : "");
+      b.appendChild(el("b", null, String(x[1]))); b.appendChild(el("span", null, x[0]));
+      b.setAttribute("aria-pressed", String(paMode === x[2] && document.getElementById("pa-broken").checked === x[3]));
+      b.onclick = function () { setMode(x[2]); document.getElementById("pa-broken").checked = x[3]; renderPa(); };
+      box.appendChild(b);
+    });
+  }
+  function setMode(mode) {
+    paMode = mode;
+    document.querySelectorAll(".segmented button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.mode === mode)); });
+    document.getElementById("pa-unused-wrap").hidden = mode !== "apis";
+  }
+  document.querySelectorAll(".segmented button").forEach(function (b) { b.onclick = function () { setMode(b.dataset.mode); renderPa(); }; });
+  ["pa-filter", "pa-broken", "pa-unused"].forEach(function (id) { document.getElementById(id).addEventListener(id === "pa-filter" ? "input" : "change", renderPa); });
+
+  function renderPa() {
+    summary();
+    var matrix = paMode === "matrix";
+    document.getElementById("pa-main").hidden = matrix;
+    document.getElementById("pa-matrix-wrap").hidden = !matrix;
+    if (matrix) { renderMatrix(); return; }
+    if (!O.pages.length) {
+      document.getElementById("pa-list").textContent = "";
+      document.getElementById("pa-detail").textContent = "No pages found. Add routes to tacet.config.json, or use React Router / vue-router / Next.js / Remix routing.";
+      return;
+    }
+    var q = document.getElementById("pa-filter").value.trim().toLowerCase();
+    var onlyBad = document.getElementById("pa-broken").checked, unused = document.getElementById("pa-unused").checked;
+    var items = (paMode === "pages" ? pageItems : apiItems).filter(function (it) {
+      if (paMode === "apis" && !unused && !it.uses.length) return false;
+      if (onlyBad && !it.bad) return false;
+      return !q || it.text.indexOf(q) >= 0;
+    });
+    items.sort(function (a, b) { return a.group.localeCompare(b.group) || (paMode === "pages" ? (a.p.route || "").localeCompare(b.p.route || "") : splitKey(a.e.label).path.localeCompare(splitKey(b.e.label).path)); });
+    var total = paMode === "pages" ? pageItems.length : (unused ? apiItems.length : usedApiCount);
+    document.getElementById("pa-count").textContent = items.length + " of " + total + (paMode === "pages" ? " pages" : " APIs");
+
+    var list = document.getElementById("pa-list"); list.textContent = "";
+    var groups = new Map(); items.forEach(function (it) { push(groups, it.group, it); });
+    var shown = 0;
+    groups.forEach(function (members, name) {
+      var key = paMode + ":" + name, closed = collapsed.has(key) && !q;
+      var head = el("button", "group-head");
+      head.appendChild(el("span", null, (closed ? "▸ " : "▾ ") + name));
+      var n = el("span", "n", String(members.length)), bad = members.filter(function (m) { return m.bad; }).length;
+      if (bad) n.appendChild(el("span", "bad", bad + " broken"));
+      head.appendChild(n);
+      head.onclick = function () { if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key); renderPa(); };
+      list.appendChild(head);
+      if (closed) return;
+      members.forEach(function (it) {
+        if (shown++ > 1500) return;
+        var b = el("button", "page-item"); b.setAttribute("aria-current", String(paSelected[paMode] === it.id));
+        if (paMode === "pages") {
+          b.appendChild(el("span", "route", it.p.route || it.p.component));
+          var meta = el("span", "meta"); meta.appendChild(el("span", "comp", it.p.component));
+          meta.appendChild(el("span", "badge", it.p.apis.length + " API" + (it.p.apis.length === 1 ? "" : "s")));
+          if (it.bad) meta.appendChild(el("span", "badge broken", it.bad + " broken"));
+          b.appendChild(meta);
+        } else {
+          var k = splitKey(it.e.label), line = el("span", "meta");
+          line.appendChild(methodBadge(k.method)); line.appendChild(el("span", "route", k.path));
+          b.appendChild(line);
+          var meta2 = el("span", "meta");
+          meta2.appendChild(el("span", "badge" + (it.bad ? " broken" : ""), it.bad ? it.e.status.replace("-", " ") : it.uses.length + " page" + (it.uses.length === 1 ? "" : "s")));
+          if (it.bad) meta2.appendChild(el("span", "badge", it.uses.length + " page" + (it.uses.length === 1 ? "" : "s")));
+          b.appendChild(meta2);
+        }
+        b.onclick = function () { paSelected[paMode] = it.id; renderPa(); };
+        list.appendChild(b);
+      });
+    });
+    if (!paSelected[paMode] || !items.some(function (it) { return it.id === paSelected[paMode]; })) paSelected[paMode] = items.length ? items[0].id : null;
+    renderPaDetail();
+    var current = list.querySelector('.page-item[aria-current="true"]');
+    if (!current) { var first = list.querySelector(".page-item"); if (first && paSelected[paMode] === (items[0] && items[0].id)) first.setAttribute("aria-current", "true"); }
+  }
+
+  function steps(via) {
+    var box = el("div", "steps");
+    via.slice(1, -1).forEach(function (label, i) {
+      if (i) box.appendChild(el("span", "arr", "→"));
+      box.appendChild(el("span", "step", label));
+    });
+    return box;
+  }
+  function fieldsBox(fields) {
+    var box = el("div", "fields");
+    if (!fields.length) { box.appendChild(el("span", "muted", "No response fields read")); return box; }
+    fields.forEach(function (f) { box.appendChild(el("code", null, f)); });
+    return box;
+  }
+  function graphButton(id) {
+    var b = el("button", null, "Open in graph");
+    b.onclick = function () { showTab("graph"); history = []; focus(id); };
+    var wrap = el("div", "actions"); wrap.appendChild(b); return wrap;
+  }
+
+  function renderPaDetail() {
+    var box = document.getElementById("pa-detail"); box.textContent = "";
+    var id = paSelected[paMode];
+    if (!id) { box.appendChild(el("p", "muted", "Nothing matches the filter.")); return; }
+    var head = el("div", "head"), title = el("div");
+    if (paMode === "pages") {
+      var it = pageItems.find(function (x) { return x.id === id; }), p = it.p;
+      title.appendChild(el("h3", null, p.route || p.component));
+      title.appendChild(el("div", "sub", p.component + " · " + p.file));
+      var counts = el("div", "counts"); counts.appendChild(el("span", "badge", p.apis.length + " APIs"));
+      if (it.bad) counts.appendChild(el("span", "badge broken", it.bad + " broken"));
+      title.appendChild(counts); head.appendChild(title); head.appendChild(graphButton(p.page)); box.appendChild(head);
+      var sorted = p.apis.slice().sort(function (a, b) { return (isBrokenUse(b) ? 1 : 0) - (isBrokenUse(a) ? 1 : 0) || splitKey(a.apiKey).path.localeCompare(splitKey(b.apiKey).path); });
+      var bad = sorted.filter(isBrokenUse), ok = sorted.filter(function (a) { return !isBrokenUse(a); });
+      if (bad.length) { box.appendChild(el("h4", null, "Broken (" + bad.length + ")")); bad.forEach(function (a) { box.appendChild(apiUse(a)); }); }
+      if (ok.length) { box.appendChild(el("h4", null, "APIs (" + ok.length + ")")); ok.forEach(function (a) { box.appendChild(apiUse(a)); }); }
+    } else {
+      var api = apiItems.find(function (x) { return x.id === id; }), k = splitKey(api.e.label);
+      var line = el("div", "meta"); line.appendChild(methodBadge(k.method)); line.appendChild(el("h3", null, k.path)); title.appendChild(line);
+      title.appendChild(el("div", "sub", api.e.detail || (api.e.status || "")));
+      var c = el("div", "counts");
+      c.appendChild(el("span", "pill" + (api.bad ? " broken" : api.e.status === "unused" ? " unused" : ""), api.e.status || ""));
+      c.appendChild(el("span", "badge", api.uses.length + " pages"));
+      title.appendChild(c); head.appendChild(title); head.appendChild(graphButton(api.e.id)); box.appendChild(head);
+      if (!api.uses.length) box.appendChild(el("p", "muted", "No page uses this API."));
+      else {
+        box.appendChild(el("h4", null, "Used by pages (" + api.uses.length + ")"));
+        api.uses.slice().sort(function (a, b) { return (a.page.route || "").localeCompare(b.page.route || ""); }).forEach(function (u) { box.appendChild(pageUse(u)); });
+      }
+    }
+  }
+  function apiUse(a) {
+    var d = el("details", "use" + (isBrokenUse(a) ? " bad" : "")), sm = el("summary"), k = splitKey(a.apiKey);
+    sm.appendChild(methodBadge(k.method));
+    var path = el("span", "path", k.path);
+    if (isBrokenUse(a)) path.appendChild(el("small", null, a.status.replace("-", " ") + " in the backend"));
+    sm.appendChild(path);
+    sm.appendChild(el("span", "badge", a.fields.length + " field" + (a.fields.length === 1 ? "" : "s")));
+    d.appendChild(sm);
+    var body = el("div", "body");
+    body.appendChild(el("div", "muted small", "Call path")); body.appendChild(steps(a.via));
+    body.appendChild(el("div", "muted small", "Fields read")); body.appendChild(fieldsBox(a.fields));
+    var link = el("a", "link", "Show this API's pages"); link.href = "#";
+    link.onclick = function (ev) { ev.preventDefault(); setMode("apis"); paSelected.apis = a.endpoint; document.getElementById("pa-filter").value = ""; document.getElementById("pa-broken").checked = false; renderPa(); };
+    var lw = el("div"); lw.style.marginTop = "8px"; lw.appendChild(link); body.appendChild(lw);
+    d.appendChild(body);
+    return d;
+  }
+  function pageUse(u) {
+    var d = el("details", "use"), sm = el("summary");
+    var path = el("span", "path", u.page.route || u.page.component); path.appendChild(el("small", null, u.page.component));
+    sm.appendChild(path); sm.appendChild(el("span", "badge", u.use.fields.length + " field" + (u.use.fields.length === 1 ? "" : "s")));
+    d.appendChild(sm);
+    var body = el("div", "body");
+    body.appendChild(el("div", "muted small", "Call path")); body.appendChild(steps(u.use.via));
+    body.appendChild(el("div", "muted small", "Fields read")); body.appendChild(fieldsBox(u.use.fields));
+    var link = el("a", "link", "Show this page's APIs"); link.href = "#";
+    link.onclick = function (ev) { ev.preventDefault(); setMode("pages"); paSelected.pages = u.page.page; document.getElementById("pa-filter").value = ""; document.getElementById("pa-broken").checked = false; renderPa(); };
+    var lw = el("div"); lw.style.marginTop = "8px"; lw.appendChild(link); body.appendChild(lw);
+    d.appendChild(body);
+    return d;
+  }
+
+  /** The full Page × API grid; offered only for small projects, where it still fits on screen. */
   function renderMatrix() {
-    var all = document.getElementById("matrix-all").checked;
-    var used = new Set(); O.pages.forEach(function (p) { p.apis.forEach(function (a) { used.add(a.endpoint); }); });
-    var apis = entities.filter(function (e) { return e.class === "Endpoint" && (all || used.has(e.id)); });
+    var apis = apiItems.filter(function (a) { return a.uses.length; }).map(function (a) { return a.e; });
     var table = document.getElementById("matrix"); table.textContent = "";
-    if (!O.pages.length) { table.appendChild(el("caption", "muted pad", "No pages found. Add routes to tacet.config.json, or use React Router / Next.js / Remix routing.")); return; }
     var thead = el("thead"), hr = el("tr"); hr.appendChild(el("th", null, "Page \\\\ API"));
     apis.forEach(function (a) { var th = el("th", "api"); th.appendChild(entityLink(a.id)); hr.appendChild(th); });
     thead.appendChild(hr); table.appendChild(thead);
@@ -867,24 +1121,7 @@ const SCRIPT = `
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-
-    var rev = document.getElementById("api-pages"); rev.textContent = "";
-    var h = el("thead"), r = el("tr"); ["API", "Status", "Pages", "Fields read"].forEach(function (x) { r.appendChild(el("th", null, x)); }); h.appendChild(r); rev.appendChild(h);
-    var b = el("tbody");
-    entities.filter(function (e) { return e.class === "Endpoint"; }).forEach(function (a) {
-      var pages = [], fields = new Set();
-      O.pages.forEach(function (p) { p.apis.forEach(function (u) { if (u.endpoint === a.id) { pages.push(p.page); u.fields.forEach(function (f) { fields.add(f); }); } }); });
-      if (!all && !pages.length) return;
-      var tr = el("tr"), c1 = el("td", "mono"); c1.appendChild(entityLink(a.id)); tr.appendChild(c1);
-      var c2 = el("td"); c2.appendChild(el("span", "pill" + (broken(a) ? " broken" : a.status === "unused" ? " unused" : ""), a.status || "")); tr.appendChild(c2);
-      var c3 = el("td"); pages.forEach(function (id, i) { if (i) c3.appendChild(document.createTextNode(", ")); c3.appendChild(entityLink(id)); });
-      if (!pages.length) c3.appendChild(el("span", "muted", "—")); tr.appendChild(c3);
-      tr.appendChild(el("td", "mono", Array.from(fields).sort().join(", ") || "—"));
-      b.appendChild(tr);
-    });
-    rev.appendChild(b);
   }
-  document.getElementById("matrix-all").onchange = renderMatrix;
 
   // ================================================================ triples
   var predSelect = document.getElementById("triple-predicate");
@@ -965,7 +1202,7 @@ const SCRIPT = `
 
   rebuild();
   renderDetails();
-  renderMatrix();
+  renderPa();
   renderTriples();
   renderSchema();
 })();
