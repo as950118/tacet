@@ -60,11 +60,12 @@ export interface FunctionInfo {
 /**
  * Where a page route was found:
  * - react-router: `<Route path element>` JSX or `{ path, element | Component }` route objects
+ * - vue-router:   `{ path, component }` route objects whose component is a .vue file
  * - file-system:  Next.js `pages/` / `app/**\/page.tsx`, Remix / React Router `app/routes/`
  * - config:       tacet.config.json `routes`
  * - convention:   no router found; exported components in pages/, views/, screens/ directories
  */
-export type RouteSource = "react-router" | "file-system" | "config" | "convention";
+export type RouteSource = "react-router" | "vue-router" | "file-system" | "config" | "convention";
 
 /** A page of the frontend: a route path (when known) and the component it shows. */
 export interface RouteInfo {

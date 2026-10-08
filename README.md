@@ -188,9 +188,11 @@ Pages → APIs (3):
 프로젝트를 엔티티(Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto, DtoField, Enum, File)와
 관계(`showsComponent`, `renders`, `calls`, `requests`, `reads`, `handledBy`, `accepts`, `returns`, `hasField`, `typedAs`,
 `definedIn`)로 표현한다. 관계마다 근거 코드 위치가 붙고, `usesApi`(페이지 → API)는 이 관계들을 따라가 추론한다.
+페이지가 실제로 요청하는 API만 연결하며, 공용 helper(`formatDate(row.createdAt)`)가 다른 API 데이터를 읽었다는 이유만으로는 연결하지 않는다.
 읽는 응답 필드는 실제 DTO 필드(`Profile.email`)에 연결된다.
 
-페이지는 React Router(`<Route>` JSX, route 객체, `lazy`), Next.js(`pages/`, `app/**/page.tsx`), Remix/React Router
+페이지는 React Router(`<Route>` JSX, route 객체, `lazy`), vue-router(`{ path, component: () => import("./X.vue") }`,
+다른 파일의 route 배열을 `children: [...routes]`로 합친 경우 포함), Next.js(`pages/`, `app/**/page.tsx`), Remix/React Router
 `app/routes/`에서 찾는다. 인식하지 못하는 router는 `tacet.config.json`의 `routes`로 지정하고, router가 하나도 없으면
 `pages/`·`views/`·`screens/` 디렉터리의 export된 컴포넌트를 (경로 없는) 페이지로 본다.
 

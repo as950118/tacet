@@ -98,7 +98,7 @@ Frontend (Phase 1 구현):
 - `resolution`: `direct`(axios/fetch 직접 호출) · `wrapper`(API 호출 결과를 반환하는 함수 호출, 예: `getUser(id)`) · `config`(apiClientMap)
 - `wrapperFunctionId`: wrapper 호출이 거치는 API client 함수. graph에서 `API → getUser → UserPage` 사슬과 "이 파일의 client 함수를 누가 쓰나"에 사용.
 - `invokes` / `renders`: import를 따라 해석된 프로젝트 함수 호출과 JSX로 렌더하는 컴포넌트의 function id. `parentId`는 감싸는 함수(콜백 → 컴포넌트). ontology의 `calls`/`renders` 관계가 된다.
-- `RouteInfo.source`: `react-router`(`<Route path element>` JSX, `{ path, element | Component | lazy, children }` 객체, `React.lazy`) · `file-system`(Next.js `pages/`·`app/**/page.tsx`, Remix/React Router `app/routes/`, `package.json` 의존성으로 판단) · `config`(`tacet.config.json`의 `routes`) · `convention`(router가 하나도 없을 때 `pages/`·`views/`·`screens/` 디렉터리의 export된 컴포넌트, path = null). element 안에 감싼 컴포넌트가 있으면 가장 안쪽 프로젝트 컴포넌트를 페이지로 본다(`<RequireAuth><Dashboard/></RequireAuth>` → Dashboard).
+- `RouteInfo.source`: `vue-router`(`{ path, component }` 객체의 component가 `.vue`: `() => import("./X.vue")` 또는 import한 컴포넌트. 변수에 담긴 route 배열이 `children: [...routes]`로 spread되면 다른 파일이어도 부모 경로 아래로 합친다) · `react-router`(`<Route path element>` JSX, `{ path, element | Component | lazy, children }` 객체, `React.lazy`) · `file-system`(Next.js `pages/`·`app/**/page.tsx`, Remix/React Router `app/routes/`, `package.json` 의존성으로 판단) · `config`(`tacet.config.json`의 `routes`) · `convention`(router가 하나도 없을 때 `pages/`·`views/`·`screens/` 디렉터리의 export된 컴포넌트, path = null). element 안에 감싼 컴포넌트가 있으면 가장 안쪽 프로젝트 컴포넌트를 페이지로 본다(`<RequireAuth><Dashboard/></RequireAuth>` → Dashboard).
 - `request`: 정적으로 알 수 있는 query key(URL의 `?a=`, axios `params`)와 body key(object literal). 알 수 없으면 `null` — 추측하지 않는다.
 - `path`: **응답 body 기준 경로**. `res.data.user.name`(axios)이나 `(await res.json()).user.name`(fetch) 모두 `["user","name"]`로 저장된다. 배열 원소는 `"[]"`. 따라서 Phase 5에서 DTO 필드와 바로 비교할 수 있다.
 - `flow`: `direct`(응답 body임이 증명됨) · `derived`(추적 불가한 함수를 거침, 예: `transform(user).name`) → Phase 5에서 DEFINITE/POSSIBLE 판정의 근거가 된다.
@@ -152,7 +152,7 @@ shadowing이나 다른 파일에서 import한 함수도 정확히 구분된다. 
 URL은 정적으로 해석 가능한 경우만 패턴화한다: 문자열, 템플릿 리터럴(`` `/users/${id}` ``), 문자열 연결(`"/users/" + id`)은
 `/users/{param}`이 되고, 완전히 동적인 URL은 `null`로 둔다(추측하지 않음). 문자열 `const`(`` `${BASE}/items` ``)는 값으로 치환한다.
 
-**Vue SFC** (`vue.ts`): `.vue` 파일은 메모리 안의 `X.vue.ts`로 분석한다(`import "./X.vue"`가 그대로 해석된다). script 블록은
+**Vue SFC** (`vue.ts`): 각 `.vue`는 함수 대신 `fn:<file>:component` id의 컴포넌트 하나로 표현되어 script setup·template의 호출과 읽기가 모두 여기에 속하고, template에서 쓰는 컴포넌트는 `renders`로 연결된다.  `.vue` 파일은 메모리 안의 `X.vue.ts`로 분석한다(`import "./X.vue"`가 그대로 해석된다). script 블록은
 원래 줄·열을 유지하고, 나머지 줄은 비운다. template은 `@vue/compiler-dom`으로 파싱해 각 표현식을 원래 줄에 TypeScript로 쓴다:
 `v-for` → `for (const u of ...) {`, `v-slot` → 블록 상수, `@click` → arrow 함수. script binding 참조는 `__tacetUnref(x)`
 (template의 ref 자동 unwrap), prop 참조는 `__tacetProps.x`, 자식 컴포넌트에 넘기는 값은 `__tacetRender(Comp, { prop: ... })`로

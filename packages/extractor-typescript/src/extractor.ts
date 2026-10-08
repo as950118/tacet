@@ -30,7 +30,21 @@ import {
   type TrackedValue,
 } from "./analyzer.js";
 import { extractRoutes } from "./routes.js";
-import { isVueVirtualPath, vueDisplayCode, vueToTypeScript, vueVirtualPath } from "./vue.js";
+import {
+  VUE_RENDER,
+  vueComponentFunctionId,
+  vueComponentName,
+  vueDisplayCode,
+  vueToTypeScript,
+  vueVirtualPath,
+} from "./vue.js";
+
+/** In-memory TypeScript files generated from .vue files (see vue.ts). */
+const vueSourceFiles = new WeakSet<SourceFile>();
+
+export function isVueSourceFile(sf: SourceFile): boolean {
+  return vueSourceFiles.has(sf);
+}
 
 const MAX_CODE_LENGTH = 200;
 
@@ -100,7 +114,7 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
   const rel = (sf: SourceFile): string => {
     const path = sf.getFilePath();
     // A .vue file is analyzed as an in-memory `X.vue.ts`; report it as the .vue file.
-    const shown = isVueVirtualPath(path) && !existsSync(path) ? path.slice(0, -3) : path;
+    const shown = vueSourceFiles.has(sf) ? path.slice(0, -3) : path;
     return relative(root, shown).split(sep).join("/");
   };
 
@@ -120,7 +134,19 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
   };
   const functionIdOf = (node: Node): string | null => {
     const fn = isFunctionLike(node) ? node : node.getFirstAncestor(isFunctionLike);
-    return fn ? idOf("fn", fn) : null;
+    if (fn) return idOf("fn", fn);
+    // Module-level code of a .vue file (script setup, template) belongs to the component.
+    return vueSourceFiles.has(node.getSourceFile()) ? vueComponentFunctionId(rel(node.getSourceFile())) : null;
+  };
+  /** The component a value passed to `__tacetRender` refers to: a Vue component or a function component. */
+  const renderedComponentId = (expr: Node | undefined): string | null => {
+    if (!expr) return null;
+    const fn = resolveFunctionNode(expr);
+    if (fn) return idOf("fn", fn);
+    const symbol = expr.getSymbol();
+    const decl = (symbol?.isAlias() ? symbol.getAliasedSymbol() ?? symbol : symbol)?.getDeclarations()[0];
+    const sf = decl?.getSourceFile();
+    return sf && vueSourceFiles.has(sf) ? vueComponentFunctionId(rel(sf)) : null;
   };
 
   const analyzer = new DataFlowAnalyzer(config, callIdOf, loadEnv(root, config));
@@ -169,7 +195,11 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
         const component = resolveFunctionNode(node.getTagNameNode());
         if (owner && component) addTo(rendersByFunction, owner, idOf("fn", component));
       }
-      if (Node.isCallExpression(node)) {
+      if (Node.isCallExpression(node) && node.getExpression().getText() === VUE_RENDER) {
+        const owner = functionIdOf(node);
+        const component = renderedComponentId(node.getArguments()[0]);
+        if (owner && component) addTo(rendersByFunction, owner, component);
+      } else if (Node.isCallExpression(node)) {
         const owner = functionIdOf(node);
         if (owner) {
           addTo(callsByFunction, owner, truncate(node.getExpression().getText()));
@@ -229,6 +259,23 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
         renders: [...(rendersByFunction.get(id) ?? [])],
       });
     }
+    if (vueSourceFiles.has(file)) {
+      const id = vueComponentFunctionId(rel(file));
+      const name = vueComponentName(file.getFilePath());
+      manifest.functions.push({
+        id,
+        name,
+        file: rel(file),
+        params: [],
+        returnType: null,
+        calls: [...(callsByFunction.get(id) ?? [])],
+        location: { file: rel(file), line: 1, column: 1 },
+        containingComponent: name,
+        parentId: null,
+        invokes: [...(invokesByFunction.get(id) ?? [])],
+        renders: [...(rendersByFunction.get(id) ?? [])].filter((target) => target !== id),
+      });
+    }
   }
 
   for (const access of analyzer.recordedDestructuringAccesses) {
@@ -244,6 +291,8 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
     functionId: (fn) => idOf("fn", fn),
     functionName,
     isComponent,
+    vueComponent: (sf) =>
+      vueSourceFiles.has(sf) ? { id: vueComponentFunctionId(rel(sf)), name: vueComponentName(sf.getFilePath()) } : null,
   });
 
   const apiCallIds = new Set(manifest.apiCalls.map((c) => c.id));
@@ -265,7 +314,8 @@ function loadProject(root: string): Project {
 
 /** Vue single-file components are analyzed as generated TypeScript (see vue.ts). */
 function addVueFile(project: Project, vuePath: string): void {
-  project.createSourceFile(vueVirtualPath(vuePath), vueToTypeScript(readFileSync(vuePath, "utf8")), { overwrite: true });
+  const code = vueToTypeScript(readFileSync(vuePath, "utf8"));
+  vueSourceFiles.add(project.createSourceFile(vueVirtualPath(vuePath), code, { overwrite: true }));
 }
 
 function findFiles(root: string, match: (name: string) => boolean): string[] {
@@ -549,7 +599,8 @@ function componentOf(node: Node): string | null {
     if (isComponent(fn)) return functionName(fn);
     fn = fn.getFirstAncestor(isFunctionLike);
   }
-  return null;
+  const file = node.getSourceFile();
+  return vueSourceFiles.has(file) ? vueComponentName(file.getFilePath()) : null;
 }
 
 function boundVariableType(call: CallExpression): string | null {

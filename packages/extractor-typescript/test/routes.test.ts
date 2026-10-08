@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { FrontendManifest, TacetConfig } from "@tacet-api/core";
+import { buildOntology, ProjectModel, type FrontendManifest, type TacetConfig } from "@tacet-api/core";
 import { extractTypeScriptManifest } from "../src/index.js";
 import { nextRoute, remixRoute } from "../src/routes.js";
 
@@ -75,6 +75,58 @@ export const router = createBrowserRouter([
       ["/admin", "Dashboard"],
       ["/admin/orders", "Orders"],
     ]);
+  });
+
+  it("reads vue-router routes spread from other files, and links pages to the APIs their components use", () => {
+    const m = extract({
+      "src/api.ts": `import axios from "axios";
+export const getUsers = () => axios.get("/users");
+export const getUser = (id: string) => axios.get(\`/users/\${id}\`);`,
+      "src/pages/users/index.ts": `import type { RouteRecordRaw } from "vue-router";
+export const userRoutes: Array<RouteRecordRaw> = [
+  { path: "users", name: "UserList", component: () => import("./ui/UserListPage.vue") },
+  { path: "users/:id", component: () => import("./ui/UserDetailPage.vue") },
+];`,
+      "src/pages/index.ts": `import { userRoutes } from "./users";
+import RootLayout from "../RootLayout.vue";
+export const routes = [
+  { path: "/admin", component: RootLayout, redirect: "/admin/users", children: [...userRoutes] },
+];`,
+      "src/RootLayout.vue": `<template><router-view /></template>`,
+      "src/pages/users/ui/UserListPage.vue": `<script setup lang="ts">
+import { ref } from "vue";
+import { getUsers } from "../../../api";
+import UserTable from "./UserTable.vue";
+const users = ref();
+getUsers().then((res) => { users.value = res.data; });
+</script>
+<template>
+  <UserTable :rows="users" />
+</template>`,
+      "src/pages/users/ui/UserTable.vue": `<script setup lang="ts">
+defineProps<{ rows: { name: string }[] }>();
+</script>
+<template>
+  <tr v-for="row in rows" :key="row.name"><td>{{ row.name }}</td></tr>
+</template>`,
+      "src/pages/users/ui/UserDetailPage.vue": `<script setup lang="ts">
+import { getUser } from "../../../api";
+async function load(id: string) { const { data } = await getUser(id); return data.email; }
+</script>
+<template><div /></template>`,
+    });
+    expect(routes(m)).toEqual([
+      { path: "/admin", component: "RootLayout", source: "vue-router", componentFile: "src/RootLayout.vue" },
+      { path: "/admin/users", component: "UserListPage", source: "vue-router", componentFile: "src/pages/users/ui/UserListPage.vue" },
+      { path: "/admin/users/:id", component: "UserDetailPage", source: "vue-router", componentFile: "src/pages/users/ui/UserDetailPage.vue" },
+    ]);
+
+    const ontology = buildOntology(new ProjectModel(m, null));
+    const pages = Object.fromEntries(
+      ontology.pages.map((p) => [p.route, p.apis.map((a) => `${a.apiKey} ${a.fields.join(",")}`.trim())]),
+    );
+    expect(pages["/admin/users"]).toEqual(["GET /users [].name"]);
+    expect(pages["/admin/users/:id"]).toEqual(["GET /users/{param} email"]);
   });
 
   it("maps Next.js pages/ and app/ files to routes", () => {

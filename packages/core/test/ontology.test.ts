@@ -59,6 +59,27 @@ const facts = (o: Ontology, predicate?: string) =>
   o.triples.filter((tr) => !predicate || tr.predicate === predicate).map((tr) => `${label(o, tr.subject)} ${tr.predicate} ${label(o, tr.object)}`);
 
 describe("buildOntology", () => {
+  it("does not attribute an API to a page only because a shared helper read its data", () => {
+    const fns = [
+      func("Orders", "src/pages/Orders.tsx", { invokes: ["formatDate"] }, "Orders"),
+      func("formatDate", "src/util.ts"),
+      func("UserPage", "src/pages/User.tsx", { invokes: ["formatDate"] }, "UserPage"),
+    ];
+    const calls = [
+      call("c1", "GET", "/users/{param}", { callerFunctionId: "UserPage", file: "src/pages/User.tsx" }),
+      call("c2", "GET", "/orders", { callerFunctionId: "Orders", file: "src/pages/Orders.tsx" }),
+    ];
+    const accesses = [access("a1", "c1", ["name"], { containingFunctionId: "formatDate", file: "src/util.ts" })];
+    const manifest = {
+      ...frontend(calls, accesses, fns),
+      routes: [route("r1", "/users/:id", "UserPage", "UserPage"), route("r2", "/orders", "Orders", "Orders")],
+    };
+    const o = buildOntology(new ProjectModel(manifest, backend([endpoint("GET", "/users/{id}", t.dto("com.example.UserResponse"))], [USER, PROFILE])));
+    const pages = Object.fromEntries(o.pages.map((p) => [p.route, p.apis.map((a) => `${a.apiKey} ${a.fields.join(",")}`)]));
+    expect(pages["/orders"]).toEqual(["GET /orders "]);
+    expect(pages["/users/:id"]).toEqual(["GET /users/{id} name"]);
+  });
+
   const o = sample();
 
   it("classifies entities", () => {

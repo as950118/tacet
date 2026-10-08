@@ -17,8 +17,14 @@ export function vueVirtualPath(vuePath: string): string {
   return `${vuePath}.ts`;
 }
 
-export function isVueVirtualPath(path: string): boolean {
-  return path.endsWith(".vue.ts");
+/** A Vue component has no function of its own; its script setup and template belong to this id. */
+export function vueComponentFunctionId(vueRelPath: string): string {
+  return `fn:${vueRelPath}:component`;
+}
+
+/** `src/pages/UserList.vue` → `UserList`. */
+export function vueComponentName(path: string): string {
+  return path.replace(/\.ts$/, "").replace(/\.vue$/, "").split(/[\\/]/).pop()!;
 }
 
 /** Generated template code shown as written in the template: `__tacetUnref(user).name` → `user.name`. */
@@ -240,7 +246,7 @@ class TemplateGenerator {
         emitAt(dir, `${this.expression(dir.exp.content, scope)};`);
       }
     }
-    if (component && componentProps.length > 0) {
+    if (component) {
       this.emit(node.loc.start.line, node.loc.start.column, `${VUE_RENDER}(${component}, { ${componentProps.join(", ")} });`);
     }
 

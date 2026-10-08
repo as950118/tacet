@@ -535,11 +535,12 @@ function inferPageApis(
     for (const id of order) {
       if (entities.get(id)?.class === "Endpoint") use(id, pathTo(id));
     }
+    // Reads only add fields to APIs the page requests: a shared helper (`formatDate(row.createdAt)`) reads
+    // whatever API data it was last given, which says nothing about this page.
     for (const id of order) {
       for (const read of readsByEntity.get(id) ?? []) {
-        if (!entities.has(read.endpoint)) continue;
-        const api = use(read.endpoint, [...pathTo(id), read.endpoint]);
-        if (!api.fields.includes(read.path)) api.fields.push(read.path);
+        const api = apis.get(read.endpoint);
+        if (api && !api.fields.includes(read.path)) api.fields.push(read.path);
       }
     }
     const list = [...apis.values()].sort((a, b) => a.apiKey.localeCompare(b.apiKey));

@@ -13,6 +13,8 @@ export interface RouteContext {
   functionId(fn: FunctionLike): string;
   functionName(fn: FunctionLike): string;
   isComponent(fn: FunctionLike): boolean;
+  /** The component of a .vue file's generated source, or null for other files. */
+  vueComponent(sf: SourceFile): { id: string; name: string } | null;
 }
 
 const PAGE_DIRS = new Set(["pages", "views", "screens", "routes"]);
@@ -29,12 +31,19 @@ export function extractRoutes(ctx: RouteContext): RouteInfo[] {
   const add = (route: RouteInfo | null): void => {
     if (route && !routes.has(route.id)) routes.set(route.id, route);
   };
+  const objects: ObjectLiteralExpression[] = [];
+  const spreads = new Map<Node, Node[]>();
   for (const file of ctx.files) {
     for (const node of file.getDescendants()) {
       if (Node.isJsxOpeningElement(node) || Node.isJsxSelfClosingElement(node)) add(jsxRoute(ctx, node));
-      else if (Node.isObjectLiteralExpression(node)) add(objectRoute(ctx, node));
+      else if (Node.isObjectLiteralExpression(node)) objects.push(node);
+      else if (Node.isSpreadElement(node) && Node.isArrayLiteralExpression(node.getParent())) {
+        const decl = declarationOf(node.getExpression());
+        if (decl) (spreads.get(decl) ?? spreads.set(decl, []).get(decl)!).push(node);
+      }
     }
   }
+  for (const object of objects) add(objectRoute(ctx, object, spreads));
   for (const route of fileSystemRoutes(ctx)) add(route);
   for (const route of configRoutes(ctx)) add(route);
   if (routes.size === 0) for (const route of conventionRoutes(ctx)) add(route);
@@ -61,6 +70,15 @@ function jsxRoute(ctx: RouteContext, tag: JsxTag): RouteInfo | null {
     }
   }
   return route(ctx, tag, joinRoute(segments), component, "react-router");
+}
+
+/** The variable an identifier refers to, following imports (`...datacenterRoutes`). */
+function declarationOf(expr: Node): Node | undefined {
+  if (!Node.isIdentifier(expr)) return undefined;
+  const symbol = expr.getSymbol();
+  const resolved = symbol?.isAlias() ? symbol.getAliasedSymbol() ?? symbol : symbol;
+  const decl = resolved?.getDeclarations()[0];
+  return Node.isVariableDeclaration(decl) ? decl : undefined;
 }
 
 function isRouteTag(tag: JsxTag): boolean {
@@ -90,8 +108,12 @@ function attributeComponent(ctx: RouteContext, tag: JsxTag): ResolvedComponent |
   return null;
 }
 
-/** { path: "users/:id", element: <UserPage /> } with `children` nested under parent route objects. */
-function objectRoute(ctx: RouteContext, object: ObjectLiteralExpression): RouteInfo | null {
+/**
+ * { path: "users/:id", element: <UserPage /> } (React Router) or { path, component: () => import("./X.vue") }
+ * (vue-router), with `children` nested under parent route objects. A route array kept in its own variable and
+ * spread into a parent (`children: [...datacenterRoutes]`, also across files) is joined under that parent.
+ */
+function objectRoute(ctx: RouteContext, object: ObjectLiteralExpression, spreads: Map<Node, Node[]>): RouteInfo | null {
   const own = objectRoutePath(object);
   if (own === undefined) return null;
   let component: ResolvedComponent | null = null;
@@ -104,23 +126,25 @@ function objectRoute(ctx: RouteContext, object: ObjectLiteralExpression): RouteI
   if (!component) return null;
 
   const segments: (string | null)[] = [own];
-  let current: Node = object;
-  for (;;) {
-    const array = current.getParent();
-    const children = array?.getParent();
-    const parent = children?.getParent();
-    if (
-      !Node.isArrayLiteralExpression(array) ||
-      !Node.isPropertyAssignment(children) ||
-      children.getName() !== "children" ||
-      !Node.isObjectLiteralExpression(parent)
-    ) {
+  const visited = new Set<Node>();
+  let array: Node | undefined = object.getParent();
+  while (Node.isArrayLiteralExpression(array) && !visited.has(array)) {
+    visited.add(array);
+    let holder = array.getParent();
+    while (holder && (Node.isAsExpression(holder) || Node.isSatisfiesExpression(holder) || Node.isParenthesizedExpression(holder))) {
+      holder = holder.getParent();
+    }
+    const parent = holder?.getParent();
+    if (Node.isPropertyAssignment(holder) && holder.getName() === "children" && Node.isObjectLiteralExpression(parent)) {
+      segments.unshift(objectRoutePath(parent) ?? null);
+      array = parent.getParent();
+    } else if (Node.isVariableDeclaration(holder)) {
+      array = spreads.get(holder)?.[0]?.getParent();
+    } else {
       break;
     }
-    segments.unshift(objectRoutePath(parent) ?? null);
-    current = parent;
   }
-  return route(ctx, object, joinRoute(segments), component, "react-router");
+  return route(ctx, object, joinRoute(segments), component, component.vue ? "vue-router" : "react-router");
 }
 
 /** The route path of a route object; undefined when the object is not a route. */
@@ -154,11 +178,11 @@ function fileSystemRoutes(ctx: RouteContext): RouteInfo[] {
     routes.push({
       id: `route:${rel}`,
       path,
-      componentId: ctx.functionId(component.fn),
+      componentId: component.id,
       component: component.name,
       source: "file-system",
       file: rel,
-      location: ctx.locationOf(component.fn),
+      location: component.location,
     });
   }
   return routes;
@@ -208,11 +232,11 @@ function configRoutes(ctx: RouteContext): RouteInfo[] {
     routes.push({
       id: `route:config:${path}`,
       path,
-      componentId: component ? ctx.functionId(component.fn) : null,
+      componentId: component ? component.id : null,
       component: component?.name ?? name ?? normalized,
       source: "config",
       file: normalized,
-      location: component ? ctx.locationOf(component.fn) : { file: normalized, line: 1, column: 1 },
+      location: component ? component.location : { file: normalized, line: 1, column: 1 },
     });
   }
   return routes;
@@ -227,11 +251,11 @@ function conventionRoutes(ctx: RouteContext): RouteInfo[] {
       routes.push({
         id: `route:${rel}#${component.name}`,
         path: null,
-        componentId: ctx.functionId(component.fn),
+        componentId: component.id,
         component: component.name,
         source: "convention",
         file: rel,
-        location: ctx.locationOf(component.fn),
+        location: component.location,
       });
     }
   }
@@ -243,8 +267,20 @@ function conventionRoutes(ctx: RouteContext): RouteInfo[] {
 // ---------------------------------------------------------------------------
 
 interface ResolvedComponent {
-  fn: FunctionLike;
+  id: string;
   name: string;
+  location: SourceLocation;
+  /** A .vue component (no function node of its own). */
+  vue?: boolean;
+}
+
+function fnComponent(ctx: RouteContext, fn: FunctionLike, name: string): ResolvedComponent {
+  return { id: ctx.functionId(fn), name, location: ctx.locationOf(fn) };
+}
+
+function vueComponent(ctx: RouteContext, sf: SourceFile): ResolvedComponent | null {
+  const component = ctx.vueComponent(sf);
+  return component ? { ...component, location: { file: ctx.rel(sf), line: 1, column: 1 }, vue: true } : null;
 }
 
 function route(
@@ -258,7 +294,7 @@ function route(
   return {
     id: `route:${location.file}:${location.line}:${location.column}`,
     path,
-    componentId: ctx.functionId(component.fn),
+    componentId: component.id,
     component: component.name,
     source,
     file: location.file,
@@ -291,7 +327,11 @@ function componentFrom(ctx: RouteContext, value: Node): ResolvedComponent | null
     const lazy = lazyTarget(expr);
     if (lazy) return lazyModuleComponent(ctx, lazy, expr.getText());
     const fn = resolveFunctionNode(expr);
-    return fn ? { fn, name: expr.getText() } : null;
+    if (fn) return fnComponent(ctx, fn, expr.getText());
+    // import UserList from "./UserList.vue"
+    const symbol = expr.getSymbol();
+    const decl = (symbol?.isAlias() ? symbol.getAliasedSymbol() ?? symbol : symbol)?.getDeclarations()[0];
+    return decl ? vueComponent(ctx, decl.getSourceFile()) : null;
   }
   if (isFunctionLike(expr)) {
     const imported = importedModule(expr);
@@ -329,9 +369,13 @@ function lazyModuleComponent(ctx: RouteContext, importCall: Node, name: string |
   if (!specifier?.startsWith(".")) return null;
   const from = ctx.rel(importCall.getSourceFile());
   const base = posix.normalize(posix.join(posix.dirname(from), specifier)).replace(SOURCE_EXT, "");
-  const candidates = [".tsx", ".ts", ".jsx", ".js", "/index.tsx", "/index.ts"].map((ext) => base + ext);
+  const candidates = base.endsWith(".vue")
+    ? [base]
+    : [".tsx", ".ts", ".jsx", ".js", "/index.tsx", "/index.ts"].map((ext) => base + ext);
   const sf = ctx.files.find((f) => candidates.includes(ctx.rel(f)));
   if (!sf) return null;
+  const vue = vueComponent(ctx, sf);
+  if (vue) return vue;
   const component = defaultExportComponent(ctx, sf) ?? namedComponent(ctx, sf, "Component");
   if (!component) return null;
   return { ...component, name: name ?? (component.name === "Component" ? defaultName(ctx.rel(sf)) : component.name) };
@@ -353,7 +397,7 @@ function defaultExportComponent(ctx: RouteContext, sf: SourceFile): ResolvedComp
     }
     if (fn) {
       const name = ctx.functionName(fn);
-      return { fn, name: name === "default" || name === "<anonymous>" ? defaultName(ctx.rel(sf)) : name };
+      return fnComponent(ctx, fn, name === "default" || name === "<anonymous>" ? defaultName(ctx.rel(sf)) : name);
     }
   }
   return null;
@@ -361,7 +405,7 @@ function defaultExportComponent(ctx: RouteContext, sf: SourceFile): ResolvedComp
 
 function namedComponent(ctx: RouteContext, sf: SourceFile, name: string): ResolvedComponent | null {
   const fn = sf.getDescendants().filter(isFunctionLike).find((f) => ctx.functionName(f) === name);
-  return fn ? { fn, name } : null;
+  return fn ? fnComponent(ctx, fn, name) : null;
 }
 
 function exportedComponents(ctx: RouteContext, sf: SourceFile): ResolvedComponent[] {
@@ -376,7 +420,7 @@ function exportedComponents(ctx: RouteContext, sf: SourceFile): ResolvedComponen
       }
       if (fn && ctx.isComponent(fn) && !found.has(fn)) {
         const name = ctx.functionName(fn);
-        found.set(fn, { fn, name: name === "default" || name === "<anonymous>" ? defaultName(ctx.rel(sf)) : name });
+        found.set(fn, fnComponent(ctx, fn, name === "default" || name === "<anonymous>" ? defaultName(ctx.rel(sf)) : name));
       }
     }
   }
