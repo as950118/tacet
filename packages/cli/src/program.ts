@@ -32,7 +32,7 @@ import {
 import type { Effort } from "@tacet-api/ai-anthropic";
 import { AI_PROVIDERS, createAiProvider } from "./ai.js";
 import { runCi, type CheckFailOn, type VerifyFailOn } from "./ci.js";
-import { TacetWorkspace, DEFAULT_INDEX_PATH } from "./workspace.js";
+import { TacetWorkspace, DEFAULT_INDEX_PATH, type RelationsResult } from "./workspace.js";
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -219,6 +219,24 @@ export function buildProgram(): Command {
       emit(output, opts.out ?? (opts.format === "html" ? ".tacet/ontology.html" : undefined));
     });
 
+  program
+    .command("relations")
+    .description("Query the relations stored in the index: a page's APIs, an API's pages, or subject / predicate / object")
+    .option("--page <route>", 'APIs a page uses, e.g. "/users/:id" (route or entity id)')
+    .option("--api <api>", 'pages using an API, e.g. "GET /users/{id}"')
+    .option("--subject <entity>", "relations from this entity (id or exact label)")
+    .option("--predicate <name>", "relations of this kind: showsComponent, renders, calls, requests, reads, handledBy, returns, …")
+    .option("--object <entity>", "relations to this entity (id or exact label)")
+    .option("--limit <n>", "at most this many relations", (v) => Number.parseInt(v, 10))
+    .addOption(formatOption(["text", "json"], "text"))
+    .action((opts: { page?: string; api?: string; subject?: string; predicate?: string; object?: string; limit?: number; format: Format }) => {
+      if (!opts.page && !opts.api && !opts.subject && !opts.predicate && !opts.object) {
+        throw new Error("Pass --page, --api, or --subject / --predicate / --object");
+      }
+      const result = workspace().relations(opts);
+      emit(opts.format === "json" ? JSON.stringify(result, null, 2) : formatRelations(result));
+    });
+
   const impactFailOn = () =>
     new Option("--fail-on <level>", "exit with code 1 when frontend impact at this confidence (or higher) exists")
       .choices(["definite", "likely", "possible", "never"])
@@ -379,4 +397,26 @@ function setExitCode(report: ContractReport, failOn: FailOn): void {
     (failOn === "error" && report.counts.error > 0) ||
     (failOn === "warning" && report.counts.error + report.counts.warning > 0);
   if (failing) process.exitCode = 1;
+}
+
+function formatRelations(result: RelationsResult): string {
+  const label = (id: string) => result.entities[id]?.label ?? id;
+  const lines: string[] = [];
+  if (result.pageApis.length) {
+    lines.push(`Page → API (${result.pageApis.length}):`);
+    for (const use of result.pageApis) {
+      lines.push(`  ${label(use.page)}  →  ${use.apiKey}${use.status && use.status !== "matched" ? `  [${use.status}]` : ""}`);
+      lines.push(`      via ${use.via.slice(1, -1).join(" → ") || "(direct)"}`);
+      if (use.fields.length) lines.push(`      reads ${use.fields.join(", ")}`);
+    }
+  }
+  if (result.relations.length) {
+    if (lines.length) lines.push("");
+    lines.push(`Relations (${result.relations.length}):`);
+    for (const t of result.relations) {
+      const where = t.evidence[0] ? `  ${t.evidence[0].file}:${t.evidence[0].line}` : "";
+      lines.push(`  ${label(t.subject)}  —${t.predicate}→  ${label(t.object)}${t.inferred ? " (inferred)" : ""}${where}`);
+    }
+  }
+  return lines.length ? lines.join("\n") : "No relations found.";
 }

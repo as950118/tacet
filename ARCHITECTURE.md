@@ -218,7 +218,15 @@ routes(id, file, json)
 endpoints(id, file, method, path, json)
 dtos(id, file, name, json)
 enums(id, file, name, json)
+
+-- 관계 (위 사실에서 파생, frontend/backend가 index될 때마다 한 transaction으로 다시 씀)
+entities(id, class, label, file, line, status, json)              -- Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto, DtoField, Enum, File
+relations(subject, predicate, object, inferred, json)             -- PK(subject, predicate, object), json = evidence(file:line, code), via
+page_apis(page, endpoint, api_key, status, via, fields)           -- usesApi: 페이지 → API, 호출 경로와 읽는 필드
 ```
+
+관계 테이블은 ontology(`buildOntology`, 모든 frontend 함수 포함)를 그대로 저장한 것이다. `tacet relations`, MCP `relations`,
+Python `relations()`가 이 테이블을 읽고, SQL로 직접 조회할 수도 있다.
 
 **Incremental 갱신**: `writeManifest`는 전체를 지우고 다시 쓰지 않는다. row JSON을 비교해 바뀐 row만
 upsert/delete하고, 영향받은 **파일 목록**을 돌려준다. ID는 위치 기반(`call:<file>:<line>:<col>`)이라 바뀌지 않은

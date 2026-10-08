@@ -12,7 +12,20 @@ import type {
   PropertyAccessInfo,
   RouteInfo,
 } from "../ir/types.js";
-import { SCHEMA_SQL, SCHEMA_VERSION, TABLES } from "./schema.js";
+import type { Ontology, OntologyEntity, OntologyTriple, PageApiUse } from "../analysis/ontology.js";
+import { RELATION_TABLES, SCHEMA_SQL, SCHEMA_VERSION, TABLES } from "./schema.js";
+
+/** A row of `page_apis`: one page using one API. */
+export interface StoredPageApi extends PageApiUse {
+  page: string;
+}
+
+export interface RelationQuery {
+  subject?: string;
+  predicate?: string;
+  object?: string;
+  limit?: number;
+}
 
 export interface IndexSummary {
   files: number;
@@ -50,7 +63,7 @@ export class IndexStore {
     const version = this.tableExists("index_meta") ? this.getMeta("schemaVersion") : null;
     if (version !== null && version !== String(SCHEMA_VERSION)) {
       // The index is derived data; an old layout is simply rebuilt.
-      for (const table of [...TABLES, "index_meta"]) this.db.exec(`DROP TABLE IF EXISTS ${table}`);
+      for (const table of [...TABLES, ...RELATION_TABLES, "index_meta"]) this.db.exec(`DROP TABLE IF EXISTS ${table}`);
     }
     this.db.exec(SCHEMA_SQL);
     this.setMeta("schemaVersion", String(SCHEMA_VERSION));
@@ -181,6 +194,38 @@ export class IndexStore {
     };
   }
 
+  /**
+   * Replaces the stored relations with an ontology built from the current facts. Relations are derived data,
+   * so they are rewritten as a whole (in one transaction) rather than synced row by row.
+   */
+  writeRelations(ontology: Ontology): { entities: number; relations: number; pageApis: number } {
+    let pageApis = 0;
+    this.transaction(() => {
+      for (const table of RELATION_TABLES) this.db.exec(`DELETE FROM ${table}`);
+      const entity = this.db.prepare(
+        "INSERT INTO entities (id, class, label, file, line, status, json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const e of ontology.entities) entity.run(e.id, e.class, e.label, e.file, e.line, e.status, JSON.stringify(e));
+      const relation = this.db.prepare(
+        "INSERT OR REPLACE INTO relations (subject, predicate, object, inferred, json) VALUES (?, ?, ?, ?, ?)",
+      );
+      for (const t of ontology.triples) {
+        relation.run(t.subject, t.predicate, t.object, t.inferred ? 1 : 0, JSON.stringify(t));
+      }
+      const use = this.db.prepare(
+        "INSERT OR REPLACE INTO page_apis (page, endpoint, api_key, status, via, fields) VALUES (?, ?, ?, ?, ?, ?)",
+      );
+      for (const page of ontology.pages) {
+        for (const api of page.apis) {
+          use.run(page.page, api.endpoint, api.apiKey, api.status, JSON.stringify(api.via), JSON.stringify(api.fields));
+          pageApis++;
+        }
+      }
+      this.setMeta("relations.generatedAt", new Date().toISOString());
+    });
+    return { entities: ontology.entities.length, relations: ontology.triples.length, pageApis };
+  }
+
   private transaction(work: () => void): void {
     this.db.exec("BEGIN");
     try {
@@ -282,6 +327,58 @@ export class IndexStore {
 
   findPropertyAccessesForApiCall(apiCallId: string): PropertyAccessInfo[] {
     return this.rows("SELECT json FROM property_accesses WHERE api_call_id = ? ORDER BY file, id", apiCallId);
+  }
+
+  // ---- relations
+
+  hasRelations(): boolean {
+    return this.getMeta("relations.generatedAt") !== null;
+  }
+
+  getEntity(id: string): OntologyEntity | null {
+    const row = this.db.prepare("SELECT json FROM entities WHERE id = ?").get(id) as { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as OntologyEntity) : null;
+  }
+
+  /** Entities whose id, label, route path or page component is exactly `key`, optionally of one class. */
+  findEntitiesByKey(key: string, cls?: string): OntologyEntity[] {
+    const match =
+      "(id = ? OR label = ? OR json_extract(json, '$.attributes.path') = ? OR json_extract(json, '$.attributes.component') = ?)";
+    return cls
+      ? this.rows(`SELECT json FROM entities WHERE ${match} AND class = ? ORDER BY id`, key, key, key, key, cls)
+      : this.rows(`SELECT json FROM entities WHERE ${match} ORDER BY id`, key, key, key, key);
+  }
+
+  /** Relations matching every given part (entity ids), e.g. { predicate: "renders", object: "fn:..." }. */
+  queryRelations(query: RelationQuery = {}): OntologyTriple[] {
+    const where: string[] = [];
+    const params: SQLInputValue[] = [];
+    for (const key of ["subject", "predicate", "object"] as const) {
+      if (query[key] !== undefined) {
+        where.push(`${key} = ?`);
+        params.push(query[key]!);
+      }
+    }
+    const sql = `SELECT json FROM relations${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY subject, predicate, object${
+      query.limit ? ` LIMIT ${Math.max(1, Math.floor(query.limit))}` : ""
+    }`;
+    return this.rows(sql, ...params);
+  }
+
+  /** Pages using an API (endpoint entity id), or the APIs a page uses (page entity id). */
+  pageApis(by: { page?: string; endpoint?: string }): StoredPageApi[] {
+    const [column, value] = by.page !== undefined ? ["page", by.page] : ["endpoint", by.endpoint ?? ""];
+    const rows = this.db
+      .prepare(`SELECT page, endpoint, api_key, status, via, fields FROM page_apis WHERE ${column} = ? ORDER BY page, api_key`)
+      .all(value) as Array<{ page: string; endpoint: string; api_key: string; status: string | null; via: string; fields: string }>;
+    return rows.map((r) => ({
+      page: r.page,
+      endpoint: r.endpoint,
+      apiKey: r.api_key,
+      status: r.status as PageApiUse["status"],
+      via: JSON.parse(r.via) as string[],
+      fields: JSON.parse(r.fields) as string[],
+    }));
   }
 
   /** The frontend manifest stored in the index, or null when no frontend has been indexed. */

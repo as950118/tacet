@@ -227,6 +227,25 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
       },
     }),
     tool({
+      name: "relations",
+      title: "Stored relations",
+      description:
+        "Query the relations stored in the index database (rebuilt on every index update): `page` returns the APIs a page " +
+        "uses with the call path and fields read; `api` returns the pages using an API; `subject` / `predicate` / `object` " +
+        "return matching relations (showsComponent, renders, calls, requests, reads, handledBy, accepts, returns, hasField, " +
+        "typedAs, definedIn, usesApi) with file:line evidence. Entities are given by id or exact label.",
+      parameters: {
+        page: z.string().optional().describe('Page route or id, e.g. "/users/:id"'),
+        api: z.string().optional().describe('API, e.g. "GET /users/{id}"'),
+        subject: z.string().optional().describe("Entity id or exact label"),
+        predicate: z.string().optional().describe('Relation kind, e.g. "renders"'),
+        object: z.string().optional().describe("Entity id or exact label"),
+        limit: z.number().int().min(1).max(5000).optional(),
+      },
+      readOnly: true,
+      run: async (a) => ws.relations(a),
+    }),
+    tool({
       name: "ontology",
       title: "Project ontology",
       description:

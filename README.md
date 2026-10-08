@@ -202,6 +202,27 @@ HTML 탐색기: class별 레인 그래프, Page ↔ API 탭, triple 표, schema 
 breadcrumb). 기본값 "API paths only"는 API까지 이어지지 않는 UI 컴포넌트와 공용 formatter의 `reads` 연결을 숨긴다. 노드 클릭은
 경로 강조, 더블클릭은 그 노드로 재배치. 작은 프로젝트(150개 이하)는 처음부터 전체 그래프를 보여준다.
 
+### 4-2. 관계는 index DB에 저장된다
+
+`index`/`extract-backend`가 index를 갱신할 때마다 관계(ontology)를 다시 계산해 같은 SQLite 파일의 `entities`, `relations`,
+`page_apis` 테이블에 저장한다. 다시 분석하지 않고 바로 조회할 수 있다.
+
+```bash
+tacet relations --page "/users/:id"                      # 이 페이지가 쓰는 API (호출 경로, 읽는 필드)
+tacet relations --api "GET /users/{id}"                  # 이 API를 쓰는 페이지
+tacet relations --subject UserPage --predicate renders   # 관계 직접 조회 (subject / predicate / object, -f json)
+```
+
+```sql
+-- 이 API를 쓰는 페이지
+SELECT e.label, p.via, p.fields FROM page_apis p JOIN entities e ON e.id = p.page WHERE p.api_key = 'GET /users/{id}';
+-- 백엔드에 없는 API를 쓰는 페이지
+SELECT e.label, p.api_key, p.status FROM page_apis p JOIN entities e ON e.id = p.page WHERE p.status IN ('not-found', 'method-mismatch');
+-- 어떤 컴포넌트를 렌더링하는 곳
+SELECT s.label, s.file FROM relations r JOIN entities s ON s.id = r.subject JOIN entities o ON o.id = r.object
+WHERE r.predicate = 'renders' AND o.label = 'UserCard';
+```
+
 ### 5. Backend API 변경 → Frontend 영향
 
 ```bash

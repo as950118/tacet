@@ -195,6 +195,28 @@ class Tacet:
             pages = [p for p in pages if q in (p["route"] or "").lower() or q in p["component"].lower()]
         return pages
 
+    def relations(
+        self,
+        *,
+        page: str | None = None,
+        api: str | None = None,
+        subject: str | None = None,
+        predicate: str | None = None,
+        object: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Relations stored in the index database (rebuilt on every index update).
+
+        `page` → the APIs it uses, `api` → the pages using it (both as `pageApis` rows with the call path and fields
+        read); `subject` / `predicate` / `object` → matching `relations`. Entities by id, exact label, route or
+        component name; `entities` maps the ids in the result to their class and label."""
+        args = ["relations", "--format", "json"]
+        for flag, value in (("--page", page), ("--api", api), ("--subject", subject), ("--predicate", predicate),
+                            ("--object", object), ("--limit", limit)):
+            if value is not None:
+                args += [flag, str(value)]
+        return self._run(args)
+
     def impact_of_field(self, field: str, *, graph: GraphMode = "none") -> list[dict[str, Any]]:
         """Every endpoint returning a DTO field (e.g. "UserResponse.name") and every frontend read of it."""
         return self._run(["impact", "--field", field, "--format", "json", "--graph", graph])

@@ -100,6 +100,19 @@ def register_tools(mcp: Any, lens: Tacet | None = None, *, prefix: str = "", **l
         with `api` the rows are grouped by API."""
         return lens.page_apis(page=page, api=api)
 
+    def relations(
+        page: str | None = None,
+        api: str | None = None,
+        subject: str | None = None,
+        predicate: str | None = None,
+        object: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Relations stored in the index database: `page` → its APIs, `api` → its pages (with call path and fields
+        read), or relations by `subject` / `predicate` / `object` (showsComponent, renders, calls, requests, reads,
+        handledBy, accepts, returns, hasField, typedAs, definedIn, usesApi). Entities by id or exact label."""
+        return lens.relations(page=page, api=api, subject=subject, predicate=predicate, object=object, limit=limit)
+
     def ontology(
         focus: str | None = None,
         depth: int = 2,
@@ -126,6 +139,7 @@ def register_tools(mcp: Any, lens: Tacet | None = None, *, prefix: str = "", **l
         (impact_summary, True),
         (render_graph, False),
         (page_apis, True),
+        (relations, True),
         (ontology, True),
     ]
     names = []

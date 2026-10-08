@@ -73,6 +73,16 @@ describe.skipIf(!hasJar)("with the backend contract", () => {
     await ws.extractBackend(join(fixtures, "backend"));
   });
 
+  it("keeps the relations in the index and answers page / API / relation queries from it", () => {
+    const byPage = ws.relations({ page: "UserPage" });
+    expect(byPage.pageApis.map((u) => u.apiKey)).toContain("GET /users/{id}");
+    const byApi = ws.relations({ api: "GET /users/{id}" });
+    expect(byApi.pageApis.map((u) => byApi.entities[u.page].label)).toContain("UserPage (page)");
+    const renders = ws.relations({ subject: "UserPage", predicate: "renders" });
+    expect(renders.relations.map((t) => renders.entities[t.object].label)).toContain("UserCard");
+    expect(() => ws.relations({ page: "/nope" })).toThrow('No Page "/nope"');
+  });
+
   it("finds every planted contract violation and nothing else", () => {
     const report = ws.check();
     expect(report.result).toBe("FAIL");

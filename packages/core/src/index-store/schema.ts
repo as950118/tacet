@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * The index is a cache of extractor manifests: every row keeps the full IR
@@ -15,6 +15,9 @@ export const TABLES = [
   "dtos",
   "enums",
 ] as const;
+
+/** Relation tables: the ontology derived from the facts above, rewritten whenever the facts change. */
+export const RELATION_TABLES = ["entities", "relations", "page_apis"] as const;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -39,4 +42,21 @@ CREATE INDEX IF NOT EXISTS idx_api_calls_file ON api_calls(file);
 CREATE INDEX IF NOT EXISTS idx_prop_access_apicall ON property_accesses(api_call_id);
 CREATE INDEX IF NOT EXISTS idx_prop_access_file ON property_accesses(file);
 CREATE INDEX IF NOT EXISTS idx_endpoints_method_path ON endpoints(method, path);
+
+-- Relations (subject -predicate-> object) between pages, components, functions, APIs, controllers, DTOs and files.
+CREATE TABLE IF NOT EXISTS entities (
+  id TEXT PRIMARY KEY, class TEXT NOT NULL, label TEXT NOT NULL, file TEXT, line INTEGER, status TEXT, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS relations (
+  subject TEXT NOT NULL, predicate TEXT NOT NULL, object TEXT NOT NULL, inferred INTEGER NOT NULL, json TEXT NOT NULL,
+  PRIMARY KEY (subject, predicate, object));
+-- Which page uses which API (the inferred usesApi relation), with the call path and the response fields read.
+CREATE TABLE IF NOT EXISTS page_apis (
+  page TEXT NOT NULL, endpoint TEXT NOT NULL, api_key TEXT NOT NULL, status TEXT, via TEXT NOT NULL, fields TEXT NOT NULL,
+  PRIMARY KEY (page, endpoint));
+
+CREATE INDEX IF NOT EXISTS idx_entities_class ON entities(class);
+CREATE INDEX IF NOT EXISTS idx_entities_label ON entities(label);
+CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(object, predicate);
+CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations(predicate);
+CREATE INDEX IF NOT EXISTS idx_page_apis_endpoint ON page_apis(endpoint);
 `;

@@ -10,6 +10,8 @@ export type {
   IndexFrontendOptions,
   IndexFrontendResult,
   OntologyQueryOptions,
+  RelationsQuery,
+  RelationsResult,
   VerifiedGitChangeReport,
   VerifyChangesOptions,
 } from "./workspace.js";

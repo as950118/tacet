@@ -30,6 +30,7 @@ const TOOL_NAMES = [
   "index_frontend",
   "ontology",
   "page_apis",
+  "relations",
   "render_graph",
   "search",
   "verify_api_changes",
@@ -52,7 +53,7 @@ describe("createTacetTools", () => {
     const tools = createTacetTools();
     expect(tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES);
     const readOnly = tools.filter((t) => t.readOnly).map((t) => t.name).sort();
-    expect(readOnly).toEqual(["check_contract", "diff_api_changes", "impact_of_api", "impact_of_field", "impact_of_file", "impact_summary", "page_apis", "search", "verify_api_changes"]);
+    expect(readOnly).toEqual(["check_contract", "diff_api_changes", "impact_of_api", "impact_of_field", "impact_of_file", "impact_summary", "page_apis", "relations", "search", "verify_api_changes"]);
     expect(tools.find((t) => t.name === "impact_of_api")!.parameters.parse({ api: "GET /x" })).toEqual({
       api: "GET /x",
       graph: "none",
