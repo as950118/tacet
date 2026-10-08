@@ -230,6 +230,23 @@ describe("TypeScriptProject.refresh", () => {
     expect(after.files.some((f) => f.path === "src/pages/Product.tsx")).toBe(false);
     expect(after.files.length).toBe(before.files.length);
   });
+
+  it("regenerates and removes Vue components", () => {
+    const vue = join(dir, "src/pages/Orders.vue");
+    const component = (field: string) =>
+      `<script setup lang="ts">\nimport axios from "axios";\nconst load = () => axios.get("/orders").then((r) => r.data.${field});\n</script>\n`;
+    writeFileSync(vue, component("total"));
+    const project = TypeScriptProject.load(dir);
+    expect(accessesAt(project.extract(), "src/pages/Orders.vue", 3).map((a) => a.path)).toEqual([["total"]]);
+
+    writeFileSync(vue, component("count"));
+    project.refresh(["src/pages/Orders.vue"]);
+    expect(accessesAt(project.extract(), "src/pages/Orders.vue", 3).map((a) => a.path)).toEqual([["count"]]);
+
+    rmSync(vue);
+    project.refresh(["src/pages/Orders.vue"]);
+    expect(project.extract().files.some((f) => f.path === "src/pages/Orders.vue")).toBe(false);
+  });
 });
 
 describe("extractTypeScriptManifest (edge cases)", () => {
@@ -370,6 +387,85 @@ export async function load() {
     expect(groups.get("memory_gb")).toBe(groups.get("memoryGb"));
     expect(groups.get("memoryGb")).not.toBe(groups.get("metaData"));
     expect(groups.get("name")).toBeUndefined();
+  });
+
+  it("analyzes Vue single-file components: script setup, template reads, v-for and child props", () => {
+    const m = extract({
+      "api.ts": `import axios from "axios";
+export const getUsers = () => axios.get<{ data: { id: string; name: string }[] }>("/users");`,
+      "UserList.vue": `<template>
+  <ul v-if="users">
+    <li v-for="(u, i) in users.data" :key="u.id" @click="select(u)">
+      {{ u.name }} {{ i }}
+      <UserCard :user-info="u" />
+    </li>
+  </ul>
+  <p>{{ total.count }}</p>
+</template>
+
+<script setup lang="ts">
+import { ref } from "vue";
+import { useQuery } from "@tanstack/vue-query";
+import { getUsers } from "./api";
+import UserCard from "./UserCard.vue";
+const { data: users } = useQuery({ queryFn: async () => (await getUsers()).data });
+const total = ref();
+getUsers().then((res) => { total.value = res.data; });
+function select(user: { id: string }) { return user.id; }
+</script>`,
+      "UserCard.vue": `<script setup lang="ts">
+interface Props { userInfo: { email: string } }
+const props = defineProps<Props>();
+const email = props.userInfo.email;
+</script>
+
+<template>
+  <span>{{ userInfo.nickname }}</span>
+</template>`,
+    });
+    const reads = m.propertyAccesses
+      .map((a) => `${a.file}:${a.location.line} ${a.path.join(".")} ${a.code}`)
+      .sort();
+    expect(reads).toEqual([
+      "UserCard.vue:4 data.[].email props.userInfo.email",
+      "UserCard.vue:8 data.[].nickname userInfo.nickname",
+      "UserList.vue:19 data.[].id user.id",
+      "UserList.vue:3 data users.data",
+      "UserList.vue:3 data.[].id u.id",
+      "UserList.vue:4 data.[].name u.name",
+      "UserList.vue:8 count total.count",
+    ].sort());
+    expect(m.apiCalls.every((c) => c.file === "api.ts" || c.file === "UserList.vue")).toBe(true);
+    expect(m.files.map((f) => f.path)).toContain("UserCard.vue");
+  });
+
+  it("does not grow paths without bound through recursive functions", () => {
+    const m = extract({
+      "a.ts": `import axios from "axios";
+function walk(node: any): string[] {
+  return [node.name, ...node.children.flatMap((c: any) => walk(c))];
+}
+export async function load() {
+  const { data } = await axios.get("/tree");
+  return walk(data.root);
+}`,
+    });
+    expect(m.propertyAccesses.map((a) => a.path.join("."))).toEqual(["root.name", "root.children", "root"]);
+  });
+
+  it("evaluates a helper's result per call", () => {
+    const m = extract({
+      "a.ts": `import axios from "axios";
+const toRecord = (obj: unknown) => (obj && typeof obj === "object" ? (obj as Record<string, any>) : {});
+export async function load() {
+  const { data } = await axios.get("/templates");
+  const attrs = toRecord(data.attributes);
+  const md = toRecord(attrs.metaData);
+  return [md.disks, attrs.name];
+}`,
+    });
+    const reads = m.propertyAccesses.filter((a) => a.location.line === 7).map((a) => a.path.join("."));
+    expect(reads).toEqual(["attributes.metaData.disks", "attributes.name"]);
   });
 
   it("resolves path aliases from the tsconfig nearest to each file when there is no root tsconfig.json", () => {

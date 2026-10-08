@@ -106,6 +106,18 @@ transform(user).name                       // → name (derived: 확실하지 �
 axios.get("/users", { params: { page } })  // query key: page
 ```
 
+Vue 단일 파일 컴포넌트(`.vue`)도 분석한다. `<script>`/`<script setup>`은 그대로, `<template>`의 표현식(`{{ }}`, `:prop`,
+`v-if`, `v-for`, `@event`, `v-slot`)은 같은 줄의 TypeScript로 바꿔 분석한다. Vue Query 결과(`data.value`), `ref`/`computed`,
+template의 ref 자동 unwrap, `<UserCard :user="u" />` → 자식의 `defineProps`까지 추적한다.
+
+```vue
+<li v-for="u in users.data" :key="u.id">{{ u.name }}</li>   <!-- → data[].id, data[].name -->
+<UserCard :user-info="u" />                                <!-- UserCard.vue의 userInfo.email까지 -->
+```
+
+큰 프로젝트에서는 TypeScript type checker가 Node 기본 heap(약 4GB)을 넘을 수 있어서, CLI와 MCP 서버는 heap 크기를 직접
+지정하지 않았으면 시스템 메모리의 3/4(최대 16GB)로 다시 실행한다.
+
 ### 2. Backend API 추출 (Spring Boot)
 
 ```bash

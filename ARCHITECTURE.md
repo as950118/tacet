@@ -152,6 +152,15 @@ shadowing이나 다른 파일에서 import한 함수도 정확히 구분된다. 
 URL은 정적으로 해석 가능한 경우만 패턴화한다: 문자열, 템플릿 리터럴(`` `/users/${id}` ``), 문자열 연결(`"/users/" + id`)은
 `/users/{param}`이 되고, 완전히 동적인 URL은 `null`로 둔다(추측하지 않음). 문자열 `const`(`` `${BASE}/items` ``)는 값으로 치환한다.
 
+**Vue SFC** (`vue.ts`): `.vue` 파일은 메모리 안의 `X.vue.ts`로 분석한다(`import "./X.vue"`가 그대로 해석된다). script 블록은
+원래 줄·열을 유지하고, 나머지 줄은 비운다. template은 `@vue/compiler-dom`으로 파싱해 각 표현식을 원래 줄에 TypeScript로 쓴다:
+`v-for` → `for (const u of ...) {`, `v-slot` → 블록 상수, `@click` → arrow 함수. script binding 참조는 `__tacetUnref(x)`
+(template의 ref 자동 unwrap), prop 참조는 `__tacetProps.x`, 자식 컴포넌트에 넘기는 값은 `__tacetRender(Comp, { prop: ... })`로
+바뀌고, analyzer가 이를 자식의 `defineProps()` 결과에 연결한다. 리포트의 경로와 코드는 `.vue` 기준으로 보인다.
+
+**함수 호출**: 프로젝트 함수의 반환값은 호출마다 인자를 parameter에 묶어 계산하고 원래 binding을 되돌린다(같은 helper를 여러 값으로
+부르거나 재귀 호출해도 섞이지 않는다). 따라갈 수 없는 함수를 거친 값은 인자의 경로를 유지한 `derived`가 된다.
+
 **값 wrapper**: React Query/SWR 결과(`.data`), Vue Query 결과(`.data`가 ref), Vue `ref`/`computed`/`toRef`(`.value`),
 `x.value = res.data` 대입을 추적한다. `a ?? b`/`a || b`는 왼쪽을, `a && b`는 오른쪽을 값으로 본다.
 `a.metaData ?? a.meta_data`처럼 `??`/`||` 체인의 피연산자인 읽기는 `fallbackGroup`으로 묶여, 체인 중 하나라도 응답에 있으면

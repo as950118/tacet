@@ -8,6 +8,7 @@ import {
   type RequestShape,
 } from "@tacet-api/core";
 import { objectLiteralKeys, resolveEndpointExpression, resolveStaticString, resolveUrlQueryKeys } from "./endpoint.js";
+import { VUE_DEFINE_PROPS, VUE_RENDER, VUE_UNREF } from "./vue.js";
 
 /**
  * - body:      (a sub-part of) the response body, located at `path`
@@ -157,10 +158,8 @@ export class DataFlowAnalyzer {
     }
     if (Node.isPropertyAccessExpression(e)) {
       const base = e.getExpression();
-      const propsSym = Node.isIdentifier(unwrap(base)) ? symbolOf(unwrap(base)) : undefined;
-      if (propsSym && this.propsEnv.has(propsSym)) {
-        return this.propsEnv.get(propsSym)!.get(e.getName()) ?? null;
-      }
+      const props = this.propsBagOf(unwrap(base));
+      if (props) return props.get(e.getName()) ?? null;
       return step(this.evaluate(base), e.getName());
     }
     if (Node.isElementAccessExpression(e)) {
@@ -307,9 +306,40 @@ export class DataFlowAnalyzer {
     const component = resolveFunctionNode(opening.getTagNameNode());
     const propsParam = component?.getParameters()[0];
     if (!propsParam) return;
+    this.bindProp(propsParam.getNameNode(), attr.getNameNode().getText(), value, expr);
+  }
 
-    const propName = attr.getNameNode().getText();
-    const propsName = propsParam.getNameNode();
+  /** `__tacetRender(Comp, { user: ... })` from a Vue template: binds the values to Comp's `defineProps()`. */
+  private bindVueComponentProps(args: Node[]): void {
+    const [componentExpr, propsExpr] = args;
+    if (!componentExpr || !Node.isObjectLiteralExpression(propsExpr)) return;
+    const decl = targetSymbol(componentExpr)?.getDeclarations()[0];
+    const propsTarget = decl ? vuePropsDeclaration(decl.getSourceFile()) : undefined;
+    if (!propsTarget) return;
+    for (const prop of propsExpr.getProperties()) {
+      if (!Node.isPropertyAssignment(prop)) continue;
+      const init = prop.getInitializer();
+      const value = init ? this.evaluate(init) : null;
+      const nameNode = prop.getNameNode();
+      const name = Node.isStringLiteral(nameNode) ? nameNode.getLiteralValue() : nameNode.getText();
+      if (value && init) this.bindProp(propsTarget, name, value, init);
+    }
+  }
+
+  /** Props bound to a component's props object, also through a plain alias (`const p = props`). */
+  private propsBagOf(node: Node, depth = 0): Map<string, TrackedValue> | undefined {
+    if (!Node.isIdentifier(node) || depth > 5) return undefined;
+    const sym = symbolOf(node);
+    if (!sym) return undefined;
+    const bag = this.propsEnv.get(sym);
+    if (bag) return bag;
+    const decl = node.getSymbol()?.getDeclarations()[0];
+    const init = Node.isVariableDeclaration(decl) ? decl.getInitializer() : undefined;
+    return init ? this.propsBagOf(unwrap(init), depth + 1) : undefined;
+  }
+
+  /** Binds one prop value to a component's props: a destructuring pattern or a props object. */
+  private bindProp(propsName: Node, propName: string, value: TrackedValue, expr: Node): void {
     if (Node.isObjectBindingPattern(propsName)) {
       const element = propsName
         .getElements()
@@ -344,6 +374,14 @@ export class DataFlowAnalyzer {
     const args = call.getArguments();
     const calleeText = callee.getText();
 
+    if (calleeText === VUE_UNREF) {
+      const value = args[0] ? this.evaluate(args[0]) : null;
+      return value ? unwrapRef(value) : null;
+    }
+    if (calleeText === VUE_RENDER) {
+      this.bindVueComponentProps(args);
+      return null;
+    }
     if (QUERY_HOOKS.has(calleeText)) {
       return this.evaluateQueryHook(args, /vue-query$/.test(importSource(callee) ?? "") ? "vueQuery" : "query");
     }
@@ -421,13 +459,22 @@ export class DataFlowAnalyzer {
 
     const fn = resolveFunctionNode(call.getExpression());
     if (fn) {
+      // Evaluate the result for this call's arguments, then restore earlier bindings: a helper called with
+      // many values (`toRecord(a)`, `toRecord(b)`) or recursively (`walk(node.children[i])`) keeps the
+      // binding its body reads are recorded with, instead of the last (or an ever longer) one.
+      const previous = fn.getParameters().map((p) => {
+        const sym = Node.isIdentifier(p.getNameNode()) ? symbolOf(p.getNameNode()) : undefined;
+        return { sym, value: sym ? this.env.get(sym) : undefined };
+      });
       trackedArgs.forEach((value, i) => {
         if (value) this.bindParam(fn, i, value, args[i].getText());
       });
       const result = this.evaluateFunctionResult(fn);
+      for (const { sym, value } of previous) if (sym && value) this.env.set(sym, value);
       if (result) return result;
     }
-    return { ...firstTracked, path: [], flow: "derived" };
+    // Unknown transformation: assume it keeps the shape of its argument.
+    return { ...firstTracked, flow: "derived" };
   }
 
   private evaluateQueryHook(args: Node[], wrapper: "query" | "vueQuery"): TrackedValue | null {
@@ -619,6 +666,18 @@ function importedName(node: Node): string | undefined {
 function isVueImport(node: Node): boolean {
   const source = importSource(node);
   return source === "vue" || source === "@vue/reactivity" || source === "@vue/runtime-core";
+}
+
+/** The variable a Vue component's `defineProps()` is assigned to (`const props = defineProps<...>()`). */
+function vuePropsDeclaration(file: SourceFile): Node | undefined {
+  for (const decl of file.getVariableDeclarations()) {
+    let init: Node | undefined = decl.getInitializer();
+    if (Node.isCallExpression(init) && init.getExpression().getText() === "withDefaults") init = init.getArguments()[0];
+    if (Node.isCallExpression(init) && ["defineProps", VUE_DEFINE_PROPS].includes(init.getExpression().getText())) {
+      return decl.getNameNode();
+    }
+  }
+  return undefined;
 }
 
 function unwrap(node: Node): Node {

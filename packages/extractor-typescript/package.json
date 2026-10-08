@@ -8,7 +8,8 @@
     "ts-morph",
     "static-analysis",
     "axios",
-    "react"
+    "react",
+    "vue"
   ],
   "license": "Apache-2.0",
   "author": "Heonjin Jeong",
@@ -44,6 +45,7 @@
   },
   "dependencies": {
     "@tacet-api/core": "^0.1.0",
+    "@vue/compiler-dom": "^3.5.43",
     "ts-morph": "^28.0.0"
   }
 }

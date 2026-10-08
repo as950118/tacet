@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { relaunchWithLargerHeap } from "@tacet-api/cli";
 import { createTacetMcpServer } from "./server.js";
+
+if (relaunchWithLargerHeap()) process.exit(process.exitCode ?? 0);
 
 const { values } = parseArgs({
   options: {

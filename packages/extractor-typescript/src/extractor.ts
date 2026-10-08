@@ -30,6 +30,7 @@ import {
   type TrackedValue,
 } from "./analyzer.js";
 import { extractRoutes } from "./routes.js";
+import { isVueVirtualPath, vueDisplayCode, vueToTypeScript, vueVirtualPath } from "./vue.js";
 
 const MAX_CODE_LENGTH = 200;
 
@@ -74,6 +75,11 @@ export class TypeScriptProject {
   refresh(paths: string[]): void {
     for (const path of paths) {
       const absolute = isAbsolute(path) ? path : join(this.root, path);
+      if (absolute.endsWith(".vue")) {
+        if (existsSync(absolute)) addVueFile(this.project, absolute);
+        else this.project.getSourceFile(vueVirtualPath(absolute))?.delete();
+        continue;
+      }
       const existing = this.project.getSourceFile(absolute);
       if (!existsSync(absolute)) {
         if (existing) this.project.removeSourceFile(existing);
@@ -91,7 +97,12 @@ export class TypeScriptProject {
 }
 
 function extractFrom(root: string, files: SourceFile[], config: TacetConfig): FrontendManifest {
-  const rel = (sf: SourceFile): string => relative(root, sf.getFilePath()).split(sep).join("/");
+  const rel = (sf: SourceFile): string => {
+    const path = sf.getFilePath();
+    // A .vue file is analyzed as an in-memory `X.vue.ts`; report it as the .vue file.
+    const shown = isVueVirtualPath(path) && !existsSync(path) ? path.slice(0, -3) : path;
+    return relative(root, shown).split(sep).join("/");
+  };
 
   const locationOf = (node: Node): SourceLocation => ({
     file: rel(node.getSourceFile()),
@@ -247,6 +258,38 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
 }
 
 function loadProject(root: string): Project {
+  const project = loadTypeScriptProject(root);
+  for (const vueFile of findFiles(root, (name) => name.endsWith(".vue"))) addVueFile(project, vueFile);
+  return project;
+}
+
+/** Vue single-file components are analyzed as generated TypeScript (see vue.ts). */
+function addVueFile(project: Project, vuePath: string): void {
+  project.createSourceFile(vueVirtualPath(vuePath), vueToTypeScript(readFileSync(vuePath, "utf8")), { overwrite: true });
+}
+
+function findFiles(root: string, match: (name: string) => boolean): string[] {
+  const found: string[] = [];
+  const visit = (dir: string) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name)) visit(join(dir, entry.name));
+      } else if (match(entry.name)) {
+        found.push(join(dir, entry.name));
+      }
+    }
+  };
+  visit(root);
+  return found.sort();
+}
+
+function loadTypeScriptProject(root: string): Project {
   const tsConfigFilePath = join(root, "tsconfig.json");
   if (existsSync(tsConfigFilePath)) return new Project({ tsConfigFilePath });
   const project = new Project({
@@ -339,33 +382,22 @@ const SKIPPED_DIRS = new Set(["node_modules", "dist", "build", "coverage", "tmp"
  */
 function workspacePackages(root: string): Map<string, WorkspacePackage> {
   const packages = new Map<string, WorkspacePackage>();
-  const visit = (dir: string) => {
-    let entries: Dirent[];
+  for (const file of findFiles(root, (name) => name === "package.json")) {
+    const dir = dirname(file);
+    if (dir === root) continue;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      const pkg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      if (typeof pkg.name !== "string" || packages.has(pkg.name)) continue;
+      const fields = [pkg.types, pkg.typings, pkg.module, pkg.main];
+      packages.set(pkg.name, {
+        name: pkg.name,
+        dir,
+        entries: fields.filter((f): f is string => typeof f === "string"),
+      });
     } catch {
-      return;
+      // not a usable package.json
     }
-    for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name)) {
-        visit(join(dir, entry.name));
-      } else if (entry.name === "package.json" && dir !== root) {
-        try {
-          const pkg = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as Record<string, unknown>;
-          if (typeof pkg.name !== "string" || packages.has(pkg.name)) continue;
-          const fields = [pkg.types, pkg.typings, pkg.module, pkg.main];
-          packages.set(pkg.name, {
-            name: pkg.name,
-            dir,
-            entries: fields.filter((f): f is string => typeof f === "string"),
-          });
-        } catch {
-          // not a usable package.json
-        }
-      }
-    }
-  };
-  visit(root);
+  }
   return packages;
 }
 
@@ -432,7 +464,7 @@ function fallbackGroupOf(
 }
 
 function isSourcePath(path: string): boolean {
-  return /\.tsx?$/.test(path) && !path.endsWith(".d.ts") && !path.includes(`${sep}node_modules${sep}`);
+  return /\.(tsx?|vue)$/.test(path) && !path.endsWith(".d.ts") && !path.includes(`${sep}node_modules${sep}`);
 }
 
 function sourceFiles(project: Project): SourceFile[] {
@@ -536,6 +568,6 @@ function firstLine(text: string): string {
 }
 
 function truncate(text: string): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
+  const oneLine = vueDisplayCode(text).replace(/\s+/g, " ").trim();
   return oneLine.length > MAX_CODE_LENGTH ? `${oneLine.slice(0, MAX_CODE_LENGTH - 1)}…` : oneLine;
 }
