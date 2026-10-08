@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   Node,
   Project,
@@ -8,6 +8,7 @@ import {
   type CallExpression,
   type ElementAccessExpression,
   type PropertyAccessExpression,
+  type ResolutionHost,
   type SourceFile,
 } from "ts-morph";
 import {
@@ -21,6 +22,7 @@ import {
 } from "@tacet-api/core";
 import {
   DataFlowAnalyzer,
+  isBody,
   isFunctionLike,
   nodeLocation,
   resolveFunctionNode,
@@ -110,7 +112,7 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
     return fn ? idOf("fn", fn) : null;
   };
 
-  const analyzer = new DataFlowAnalyzer(config, callIdOf);
+  const analyzer = new DataFlowAnalyzer(config, callIdOf, loadEnv(root, config));
   analyzer.propagate(files);
 
   const manifest: FrontendManifest = {
@@ -137,6 +139,7 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
       containingFunctionId: functionIdOf(node),
       containingComponent: componentOf(node),
       code: truncate(code),
+      ...fallbackGroupOf(node, idOf),
     });
   };
 
@@ -190,7 +193,7 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
             ? (node as PropertyAccessExpression | ElementAccessExpression).getExpression()
             : node;
         const value = analyzer.evaluate(target);
-        if (value?.kind === "body" && value.path.length > 0) {
+        if (isBody(value) && value.path.length > 0) {
           recordAccess(target, value, memberRoot(target).getText(), target.getText());
         }
       }
@@ -254,9 +257,178 @@ function loadProject(root: string): Project {
       module: ts.ModuleKind.ESNext,
       target: ts.ScriptTarget.ES2022,
     },
+    resolutionHost: (host, getCompilerOptions) => nearestTsconfigResolution(root, host, getCompilerOptions),
   });
   project.addSourceFilesAtPaths([`${root}/**/*.{ts,tsx}`, `!${root}/**/node_modules/**`]);
   return project;
+}
+
+const NESTED_TSCONFIG_NAMES = ["tsconfig.json", "tsconfig.base.json"];
+
+/**
+ * Monorepos (Nx, pnpm workspaces) often have no root tsconfig.json; each package declares its own `paths`
+ * (`@shared-api` → `../../libs/shared/api/src`). Resolve every import with the `paths`/`baseUrl` of the
+ * tsconfig nearest to the importing file, so an alias means what it means in that package.
+ */
+function nearestTsconfigResolution(
+  root: string,
+  host: ts.ModuleResolutionHost,
+  getCompilerOptions: () => ts.CompilerOptions,
+): ResolutionHost {
+  const optionsByDir = new Map<string, ts.CompilerOptions | null>();
+  const parseHost: ts.ParseConfigFileHost = { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} };
+
+  const tsconfigOptions = (dir: string): ts.CompilerOptions | null => {
+    if (optionsByDir.has(dir)) return optionsByDir.get(dir)!;
+    let options: ts.CompilerOptions | null = null;
+    const configPath = NESTED_TSCONFIG_NAMES.map((name) => join(dir, name)).find((p) => existsSync(p));
+    if (configPath) {
+      const parsed = ts.getParsedCommandLineOfConfigFile(configPath, {}, parseHost);
+      if (parsed?.options.paths || parsed?.options.baseUrl) {
+        const { baseUrl, paths, pathsBasePath } = parsed.options;
+        options = { baseUrl, paths, pathsBasePath };
+      }
+    }
+    if (!options) {
+      const parent = dirname(dir);
+      options = dir !== root && parent !== dir && !relative(root, parent).startsWith("..") ? tsconfigOptions(parent) : null;
+    }
+    optionsByDir.set(dir, options);
+    return options;
+  };
+
+  let packages: Map<string, WorkspacePackage> | undefined;
+  const resolveWorkspaceImport = (name: string, containingFile: string, options: ts.CompilerOptions) => {
+    packages ??= workspacePackages(root);
+    const match = [...packages.values()].find((p) => name === p.name || name.startsWith(`${p.name}/`));
+    if (!match) return undefined;
+    const subpath = name.slice(match.name.length + 1);
+    const candidates = subpath ? [subpath] : [...match.entries, "src/index", "index"];
+    for (const candidate of candidates) {
+      const target = join(match.dir, candidate.replace(/\.(d\.)?[cm]?[jt]sx?$/, ""));
+      const resolved = ts.resolveModuleName(target, containingFile, options, host).resolvedModule;
+      if (resolved) return resolved;
+    }
+    return undefined;
+  };
+
+  return {
+    resolveModuleNames: (moduleNames, containingFile) => {
+      const options = { ...getCompilerOptions(), ...tsconfigOptions(dirname(containingFile)) };
+      return moduleNames.map(
+        (name) =>
+          ts.resolveModuleName(name, containingFile, options, host).resolvedModule ??
+          resolveWorkspaceImport(name, containingFile, options),
+      );
+    },
+  };
+}
+
+interface WorkspacePackage {
+  name: string;
+  dir: string;
+  /** `types`/`main`/`module` entries from package.json, tried in order. */
+  entries: string[];
+}
+
+const SKIPPED_DIRS = new Set(["node_modules", "dist", "build", "coverage", "tmp"]);
+
+/**
+ * Packages of a pnpm/npm/yarn workspace (`"@shared-api": "workspace:*"`), found by their package.json, so
+ * imports between them resolve to source even when node_modules is not installed (e.g. in CI).
+ */
+function workspacePackages(root: string): Map<string, WorkspacePackage> {
+  const packages = new Map<string, WorkspacePackage>();
+  const visit = (dir: string) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name)) {
+        visit(join(dir, entry.name));
+      } else if (entry.name === "package.json" && dir !== root) {
+        try {
+          const pkg = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as Record<string, unknown>;
+          if (typeof pkg.name !== "string" || packages.has(pkg.name)) continue;
+          const fields = [pkg.types, pkg.typings, pkg.module, pkg.main];
+          packages.set(pkg.name, {
+            name: pkg.name,
+            dir,
+            entries: fields.filter((f): f is string => typeof f === "string"),
+          });
+        } catch {
+          // not a usable package.json
+        }
+      }
+    }
+  };
+  visit(root);
+  return packages;
+}
+
+/** `envFiles` (dotenv, relative to the frontend root) in order, then `env`. */
+function loadEnv(root: string, config: TacetConfig): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const file of config.envFiles ?? []) {
+    const path = isAbsolute(file) ? file : join(root, file);
+    if (!existsSync(path)) throw new Error(`Env file not found: ${path}`);
+    Object.assign(env, parseDotenv(readFileSync(path, "utf8")));
+  }
+  return { ...env, ...config.env };
+}
+
+function parseDotenv(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.*?)\s*$/);
+    if (!match) continue;
+    let value = match[2];
+    const quoted = value.match(/^(["'`])(.*)\1$/);
+    value = quoted ? quoted[2] : value.replace(/\s+#.*$/, "");
+    env[match[1]] = value;
+  }
+  return env;
+}
+
+/**
+ * The outermost `??` / `||` chain a read is an operand of, looking through parentheses, casts and one
+ * wrapping call (`num(a.memoryGb) ?? num(a.memory_gb)`).
+ */
+function fallbackGroupOf(
+  node: Node,
+  idOf: (prefix: string, node: Node) => string,
+): { fallbackGroup: string } | Record<string, never> {
+  let current = node;
+  let chain: Node | null = null;
+  let crossedCall = false;
+  for (;;) {
+    const parent = current.getParent();
+    if (!parent) break;
+    if (
+      Node.isParenthesizedExpression(parent) ||
+      Node.isAsExpression(parent) ||
+      Node.isNonNullExpression(parent) ||
+      Node.isSatisfiesExpression(parent)
+    ) {
+      current = parent;
+    } else if (Node.isCallExpression(parent) && !crossedCall && parent.getArguments().includes(current)) {
+      crossedCall = true;
+      current = parent;
+    } else if (
+      Node.isBinaryExpression(parent) &&
+      [SyntaxKind.QuestionQuestionToken, SyntaxKind.BarBarToken].includes(parent.getOperatorToken().getKind())
+    ) {
+      chain = parent;
+      crossedCall = false;
+      current = parent;
+    } else {
+      break;
+    }
+  }
+  return chain ? { fallbackGroup: idOf("fallback", chain) } : {};
 }
 
 function isSourcePath(path: string): boolean {

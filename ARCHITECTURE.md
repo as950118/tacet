@@ -108,6 +108,9 @@ Backend: `EndpointInfo`, `DtoInfo`, `DtoFieldInfo`, `EnumInfo`, `ParamInfo`, 재
 ## 4. TypeScript AST 분석 방법 (구현됨)
 
 ts-morph로 프로젝트를 로드한다(`tsconfig.json`이 있으면 그대로 사용, 없으면 `**/*.ts(x)`).
+root `tsconfig.json`이 없는 monorepo(Nx, pnpm workspace)에서는 import마다 가장 가까운 `tsconfig.json`/`tsconfig.base.json`의
+`paths`/`baseUrl`로 해석하고, 그래도 안 되면 workspace 패키지(`package.json`의 `name` → `types`/`main`/`src/index`)로 해석한다.
+`node_modules`가 설치되지 않은 CI에서도 `@shared-api` 같은 workspace import가 소스로 연결된다.
 분석은 두 패스로 이루어진다.
 
 **Pass 1 — 데이터 흐름 전파 (`DataFlowAnalyzer.propagate`)**
@@ -138,13 +141,21 @@ shadowing이나 다른 파일에서 import한 함수도 정확히 구분된다. 
 메서드 호출인 마지막 segment는 제외한다.
 
 **API Call 인식 (MVP)**
-- `axios.get/post/put/delete/patch`, `axios.create()`로 만든 인스턴스(다른 모듈에서 import해도 인식)
+- `axios.get/post/put/delete/patch`, `axios.create()`로 만든 인스턴스(다른 모듈에서 import해도 인식). 인스턴스를 만드는
+  factory 함수(`createApiInstance({ baseURL })`가 `axios.create`를 반환)도 따라간다.
+- 인스턴스의 `baseURL`을 정적으로 계산해 경로 앞에 붙인다: 리터럴, `const`, 템플릿, `import.meta.env.X`/`process.env.X`
+  (`tacet.config.json`의 `envFiles`/`env`). 계산할 수 없으면 붙이지 않는다.
 - `fetch(url, { method })` (기본 GET)
 - Wrapper 함수 (위 참조)
 - `tacet.config.json`의 `apiClientMap` (추론이 불가능한 client용 명시적 매핑, 추론보다 우선)
 
 URL은 정적으로 해석 가능한 경우만 패턴화한다: 문자열, 템플릿 리터럴(`` `/users/${id}` ``), 문자열 연결(`"/users/" + id`)은
-`/users/{param}`이 되고, 완전히 동적인 URL은 `null`로 둔다(추측하지 않음).
+`/users/{param}`이 되고, 완전히 동적인 URL은 `null`로 둔다(추측하지 않음). 문자열 `const`(`` `${BASE}/items` ``)는 값으로 치환한다.
+
+**값 wrapper**: React Query/SWR 결과(`.data`), Vue Query 결과(`.data`가 ref), Vue `ref`/`computed`/`toRef`(`.value`),
+`x.value = res.data` 대입을 추적한다. `a ?? b`/`a || b`는 왼쪽을, `a && b`는 오른쪽을 값으로 본다.
+`a.metaData ?? a.meta_data`처럼 `??`/`||` 체인의 피연산자인 읽기는 `fallbackGroup`으로 묶여, 체인 중 하나라도 응답에 있으면
+나머지는 `FALLBACK_FIELD_NOT_FOUND`(info)로 보고된다.
 
 ## 5. Java API 분석 방법 (Phase 2, 구현됨)
 
@@ -170,6 +181,7 @@ nested type / wildcard import / static import 규칙으로 프로젝트 타입�
 - `@JsonProperty` 이름, `@JsonIgnore`, `@JsonIgnoreProperties`, `@JsonNaming`(snake/kebab/...), `static`/`transient` 제외.
 - nullable: primitive → false, `@NotNull/@NonNull/@NotBlank/@NotEmpty` → false, `@Nullable`/`Optional` → true, 나머지 참조 타입 → true.
 - Enum 값(`@JsonProperty` 반영), Spring Data `Page<T>`/`Slice<T>`는 실제 JSON 모양(`content`, `totalElements`...)의 DTO로 모델링.
+- `@JsonValue` getter/field가 있는 클래스는 그 값의 타입으로 직렬화된다(`ResourceData<T> { @JsonValue List<T> getData() }` → 배열).
 - 알려진 한계: 전역 Jackson 설정(`spring.jackson.property-naming-strategy`), `@JsonUnwrapped`, `@JsonValue` enum(warning), Kotlin 소스.
 
 ## 6. API ↔ TypeScript 연결 방법 (Phase 3, 구현됨)
@@ -294,6 +306,7 @@ frontend의 API 사용을 실제 backend 계약과 대조한다. 범위를 파�
 | `UNKNOWN_BODY_FIELD` / `MISSING_BODY_FIELD` | warning | request DTO에 없는 key / 필수(non-null) 필드 누락 |
 | `UNKNOWN_QUERY_PARAM` / `MISSING_QUERY_PARAM` | warning | 받지 않는 query param / 필수 param 누락 |
 | `UNRESOLVED_ENDPOINT`, `UNVERIFIABLE_FIELD` | info | 정적으로 확정 불가 (추측하지 않음) |
+| `FALLBACK_FIELD_NOT_FOUND` | info | `??`/`||` 체인의 대안 필드가 없지만 같은 체인의 다른 대안은 있음 |
 
 응답 path 검사는 제네릭을 치환하며(`ApiResponse<Page<User>>`의 `data.content[].name`), 배열 원소(`[]`), map 값,
 문자열/배열의 `length`를 이해한다. 결과: `PASS` / `WARNING` / `FAIL`, `--fail-on`으로 CI exit code 결정.

@@ -6,10 +6,59 @@ import { normalizePath, PARAM_PLACEHOLDER } from "@tacet-api/core";
  * Returns null when the URL is fully dynamic (e.g. a bare variable), because
  * guessing would produce false links in the index.
  */
-export function resolveEndpointExpression(expr: Node): string | null {
-  const raw = resolveRaw(expr);
-  if (raw === null || !raw.includes("/")) return null;
+export function resolveEndpointExpression(
+  expr: Node,
+  baseUrl: string | null = null,
+  env: Record<string, string> = {},
+): string | null {
+  const raw = resolveRaw(expr, env);
+  if (raw === null || raw === PARAM_PLACEHOLDER) return null;
+  // axios prepends baseURL unless the URL is absolute.
+  if (baseUrl !== null && !ABSOLUTE_URL.test(raw)) return normalizePath(`${stripOrigin(baseUrl)}/${raw}`);
+  if (!raw.includes("/")) return null;
   return normalizePath(stripOrigin(raw));
+}
+
+/**
+ * Evaluates an expression to a string only when every part of it is known statically: literals, `const`
+ * variables (also imported ones), template literals, `+`, and `import.meta.env.X` / `process.env.X` looked
+ * up in `env`. Used for axios `baseURL`s, which usually come from build-time env variables.
+ */
+export function resolveStaticString(expr: Node, env: Record<string, string>, depth = 0): string | null {
+  if (depth > 20) return null;
+  const next = (e: Node) => resolveStaticString(e, env, depth + 1);
+  if (Node.isStringLiteral(expr) || Node.isNoSubstitutionTemplateLiteral(expr)) return expr.getLiteralValue();
+  if (Node.isTemplateExpression(expr)) {
+    let out = expr.getHead().getLiteralText();
+    for (const span of expr.getTemplateSpans()) {
+      const value = next(span.getExpression());
+      if (value === null) return null;
+      out += value + span.getLiteral().getLiteralText();
+    }
+    return out;
+  }
+  if (Node.isBinaryExpression(expr) && expr.getOperatorToken().getKind() === SyntaxKind.PlusToken) {
+    const left = next(expr.getLeft());
+    const right = left === null ? null : next(expr.getRight());
+    return left === null || right === null ? null : left + right;
+  }
+  if (Node.isParenthesizedExpression(expr) || Node.isAsExpression(expr) || Node.isNonNullExpression(expr)) {
+    return next(expr.getExpression());
+  }
+  if (Node.isPropertyAccessExpression(expr)) {
+    const object = expr.getExpression().getText().replace(/\s+/g, "");
+    if (object === "import.meta.env" || object === "process.env") return env[expr.getName()] ?? null;
+    return null;
+  }
+  if (Node.isIdentifier(expr) || Node.isShorthandPropertyAssignment(expr)) {
+    let symbol = Node.isShorthandPropertyAssignment(expr) ? expr.getValueSymbol() : expr.getSymbol();
+    if (symbol?.isAlias()) symbol = symbol.getAliasedSymbol() ?? symbol;
+    const decl = symbol?.getDeclarations()[0];
+    if (!Node.isVariableDeclaration(decl)) return null;
+    const init = decl.getInitializer();
+    return init ? next(init) : null;
+  }
+  return null;
 }
 
 /** Query parameter names written into the URL itself, e.g. `/users?page=1&size=${n}` -> ["page", "size"]. */
@@ -40,28 +89,34 @@ export function objectLiteralKeys(expr: Node | undefined): string[] | null {
   return keys;
 }
 
-function resolveRaw(expr: Node): string | null {
+/** URL text with dynamic parts as `{param}`; constants (`${BASE_PATH}/items`) are inlined. */
+function resolveRaw(expr: Node, env: Record<string, string> = {}): string | null {
   if (Node.isStringLiteral(expr) || Node.isNoSubstitutionTemplateLiteral(expr)) {
     return expr.getLiteralValue();
   }
   if (Node.isTemplateExpression(expr)) {
     let out = expr.getHead().getLiteralText();
     for (const span of expr.getTemplateSpans()) {
-      out += PARAM_PLACEHOLDER + span.getLiteral().getLiteralText();
+      out += (resolveStaticString(span.getExpression(), env) ?? PARAM_PLACEHOLDER) + span.getLiteral().getLiteralText();
     }
     return out;
   }
+  if (Node.isIdentifier(expr) || Node.isPropertyAccessExpression(expr)) {
+    return resolveStaticString(expr, env);
+  }
   if (Node.isBinaryExpression(expr) && expr.getOperatorToken().getKind() === SyntaxKind.PlusToken) {
-    const left = resolveRaw(expr.getLeft());
-    const right = resolveRaw(expr.getRight());
+    const left = resolveRaw(expr.getLeft(), env);
+    const right = resolveRaw(expr.getRight(), env);
     if (left === null && right === null) return null;
     return (left ?? PARAM_PLACEHOLDER) + (right ?? PARAM_PLACEHOLDER);
   }
   if (Node.isParenthesizedExpression(expr)) {
-    return resolveRaw(expr.getExpression());
+    return resolveRaw(expr.getExpression(), env);
   }
   return null;
 }
+
+const ABSOLUTE_URL = /^([a-z]+:)?\/\//i;
 
 function stripOrigin(url: string): string {
   const match = url.match(/^[a-z]+:\/\/[^/]+(\/.*)?$/i);

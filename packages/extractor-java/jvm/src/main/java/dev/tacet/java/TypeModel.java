@@ -70,6 +70,7 @@ final class TypeModel {
     private final Map<String, DtoInfo> dtos = new TreeMap<>();
     private final Map<String, EnumInfo> enums = new TreeMap<>();
     private final Set<String> seen = new HashSet<>();
+    private final Set<String> jsonValueInProgress = new HashSet<>();
 
     TypeModel(SourceIndex index, List<String> warnings) {
         this.index = index;
@@ -125,6 +126,8 @@ final class TypeModel {
                 return TypeRef.enumRef(registerEnum(enumDeclaration));
             }
             List<TypeRef> typeArguments = args.stream().map(a -> map(a, scope)).toList();
+            Optional<TypeRef> jsonValue = jsonValueType(declaration, typeArguments);
+            if (jsonValue.isPresent()) return jsonValue.get();
             return TypeRef.dto(registerDto(declaration), typeArguments);
         }
 
@@ -143,6 +146,33 @@ final class TypeModel {
             return TypeRef.dto(id, args.stream().map(a -> map(a, scope)).toList());
         }
         return TypeRef.unknown(type.asString());
+    }
+
+    /**
+     * A class with a {@code @JsonValue} getter or field serializes as that value, e.g.
+     * {@code class ResourceData<T> { @JsonValue List<T> getData() }} is a JSON array, not an object.
+     */
+    private Optional<TypeRef> jsonValueType(TypeDeclaration<?> declaration, List<TypeRef> typeArguments) {
+        Optional<Type> valueType = declaration.getMethods().stream()
+                .filter(m -> !m.isStatic() && m.getParameters().isEmpty() && Annotations.has(m, "JsonValue"))
+                .map(MethodDeclaration::getType)
+                .findFirst()
+                .or(() -> declaration.getFields().stream()
+                        .filter(f -> !f.isStatic() && Annotations.has(f, "JsonValue"))
+                        .map(f -> f.getVariable(0).getType())
+                        .findFirst());
+        String id = SourceIndex.fqn(declaration);
+        if (valueType.isEmpty() || !jsonValueInProgress.add(id)) return Optional.empty();
+        try {
+            List<String> params = typeParameterNames(declaration);
+            Map<String, TypeRef> bindings = new HashMap<>();
+            for (int i = 0; i < params.size() && i < typeArguments.size(); i++) {
+                bindings.put(params.get(i), typeArguments.get(i));
+            }
+            return Optional.of(map(valueType.get(), new Scope(declaration, bindings, new HashSet<>(params))));
+        } finally {
+            jsonValueInProgress.remove(id);
+        }
     }
 
     static boolean isOptional(Type type) {

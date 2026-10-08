@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { FrontendManifest, PropertyAccessInfo } from "@tacet-api/core";
+import type { FrontendManifest, PropertyAccessInfo, TacetConfig } from "@tacet-api/core";
 import { loadConfig } from "@tacet-api/core";
 import { cpSync, readFileSync } from "node:fs";
 import { extractTypeScriptManifest, TypeScriptProject } from "../src/index.js";
@@ -243,12 +243,13 @@ describe("extractTypeScriptManifest (edge cases)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function extract(files: Record<string, string>): FrontendManifest {
+  function extract(files: Record<string, string>, config: TacetConfig = {}): FrontendManifest {
     const root = mkdtempSync(join(dir, "case-"));
     for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, name)), { recursive: true });
       writeFileSync(join(root, name), content);
     }
-    return extractTypeScriptManifest(root);
+    return extractTypeScriptManifest(root, config);
   }
 
   it("works without a tsconfig.json", () => {
@@ -261,6 +262,147 @@ export async function load() {
     });
     expect(m.apiCalls).toHaveLength(1);
     expect(m.propertyAccesses.map((a) => a.path)).toEqual([["total"]]);
+  });
+
+  it("recognizes axios instances created by a factory function and imported elsewhere", () => {
+    const m = extract({
+      "api.ts": `import axios from "axios";
+const createApiInstance = (config: { baseURL: string }) => {
+  const instance = axios.create({ withCredentials: true, ...config });
+  instance.interceptors.request.use((c) => c);
+  return instance;
+};
+function createVendorInstance() { return createApiInstance({ baseURL: "/vendor" }); }
+export const userApiInstance = createApiInstance({ baseURL: "/api" });
+export const vendorApiInstance = createVendorInstance();`,
+      "index.ts": `export { userApiInstance, vendorApiInstance } from "./api";`,
+      "a.ts": `import { userApiInstance, vendorApiInstance } from "./index";
+export async function load() {
+  const { data } = await userApiInstance.get<{ total: number }>("/orders");
+  await vendorApiInstance.delete(\`/vendors/\${data.total}\`);
+  return data.total;
+}`,
+    });
+    expect(m.apiCalls.map((c) => `${c.method} ${c.endpointPattern}`)).toEqual([
+      "GET /api/orders",
+      "DELETE /vendor/vendors/{param}",
+    ]);
+  });
+
+  it("prefixes an instance's baseURL resolved from env files, also through a client wrapper object", () => {
+    const m = extract(
+      {
+        ".env": `# comment\nVITE_API_PREFIX=/api/console/admin\nVITE_NCP_SUFFIX="/api/console/admin/v1/ncp"`,
+        "api.ts": `import axios from "axios";
+const create = (config: { baseURL: string }) => axios.create({ ...config });
+const API_PATH = import.meta.env.VITE_API_PREFIX;
+export const gatewayApi = create({ baseURL: API_PATH });
+export const ncpInstance = create({ baseURL: \`\${import.meta.env.VITE_NCP_SUFFIX}\` });
+export const unknownApi = create({ baseURL: import.meta.env.VITE_MISSING });
+export const ncpApi = {
+  get(url: string) { return ncpInstance.get(url); },
+};`,
+        "a.ts": `import { gatewayApi, ncpApi, unknownApi } from "./api";
+export async function load(id: number) {
+  await gatewayApi.get(\`/v1/users/\${id}\`);
+  await ncpApi.get("/servers");
+  await unknownApi.get("/v1/orders");
+  await gatewayApi.get("https://other.example.com/v1/x");
+}`,
+      },
+      { envFiles: [".env"] },
+    );
+    expect(m.apiCalls.filter((c) => c.file === "a.ts").map((c) => `${c.method} ${c.endpointPattern}`)).toEqual([
+      "GET /api/console/admin/v1/users/{param}",
+      "GET /api/console/admin/v1/ncp/servers",
+      "GET /v1/orders",
+      "GET /v1/x",
+    ]);
+  });
+
+  it("follows Vue Query results, refs and computed values through `.value`", () => {
+    const m = extract({
+      "api.ts": `import axios from "axios";
+export const getVpcs = () => axios.get<{ data: { id: string }[] }>("/vpcs");`,
+      "useVpcQuery.ts": `import { useQuery } from "@tanstack/vue-query";
+import { getVpcs } from "./api";
+export const useVpcQuery = () => useQuery({ queryKey: ["vpcs"], queryFn: () => getVpcs() });`,
+      "a.ts": `import { computed, ref } from "vue";
+import { useQuery } from "@tanstack/vue-query";
+import { getVpcs } from "./api";
+import { useVpcQuery } from "./useVpcQuery";
+export function useVpcs() {
+  const { data: vpcData } = useQuery({ queryFn: async () => (await getVpcs()).data });
+  const ids = computed(() => vpcData.value?.data.map((v) => v.id));
+  const first = computed(() => vpcData.value?.data[0]);
+  const query = useVpcQuery();
+  const total = ref();
+  getVpcs().then((res) => { total.value = res.data; });
+  return [ids, first.value?.name, query.data.value?.data.region, total.value.count];
+}`,
+    });
+    const reads = m.propertyAccesses.filter((a) => a.file === "a.ts").map((a) => `${a.location.line}:${a.path.join(".")}`);
+    expect(reads).toEqual([
+      "7:data",
+      "7:data.[].id",
+      "8:data.[]",
+      "12:data.[].name",
+      "12:region",
+      "12:count",
+    ]);
+  });
+
+  it("groups reads that are alternatives of one `??` / `||` chain", () => {
+    const m = extract({
+      "a.ts": `import axios from "axios";
+const num = (v: unknown) => Number(v);
+export async function load() {
+  const { data } = await axios.get("/templates");
+  const md = data.metaData ?? (data.metadata as object) ?? data.meta_data;
+  const mem = num(data.memoryGb) || num(data.memory_gb);
+  return [md, mem, data.name];
+}`,
+    });
+    const groups = new Map(m.propertyAccesses.map((a) => [a.path.join("."), a.fallbackGroup]));
+    expect(groups.get("metaData")).toBeDefined();
+    expect(groups.get("metadata")).toBe(groups.get("metaData"));
+    expect(groups.get("meta_data")).toBe(groups.get("metaData"));
+    expect(groups.get("memory_gb")).toBe(groups.get("memoryGb"));
+    expect(groups.get("memoryGb")).not.toBe(groups.get("metaData"));
+    expect(groups.get("name")).toBeUndefined();
+  });
+
+  it("resolves path aliases from the tsconfig nearest to each file when there is no root tsconfig.json", () => {
+    const m = extract({
+      "libs/api/src/index.ts": `import axios from "axios";
+export const api = axios.create();`,
+      "packages/app/tsconfig.json": `{
+  // comments are allowed
+  "compilerOptions": { "baseUrl": "./src", "paths": { "@shared-api": ["../../../libs/api/src"] } }
+}`,
+      "packages/app/src/load.ts": `import { api } from "@shared-api";
+export async function load() {
+  const { data } = await api.get("/orders");
+  return data.total;
+}`,
+    });
+    expect(m.apiCalls).toEqual([expect.objectContaining({ method: "GET", endpointPattern: "/orders" })]);
+    expect(m.propertyAccesses.map((a) => a.path)).toEqual([["total"]]);
+  });
+
+  it("resolves imports of workspace packages without node_modules", () => {
+    const m = extract({
+      "libs/api/package.json": `{ "name": "@shared-api", "main": "./src/index.ts", "types": "./src/index.d.ts" }`,
+      "libs/api/src/index.ts": `export * from "./client";`,
+      "libs/api/src/client.ts": `import axios from "axios";
+export const api = axios.create();`,
+      "packages/app/src/load.ts": `import { api } from "@shared-api";
+export async function load() {
+  const { data } = await api.get("/orders");
+  return data.total;
+}`,
+    });
+    expect(m.apiCalls).toEqual([expect.objectContaining({ method: "GET", endpointPattern: "/orders" })]);
   });
 
   it("does not link a shadowed variable with the same name", () => {
@@ -284,6 +426,27 @@ export function withoutApi(res: { data: { name: string } }) {
 export function load(url: string) { return axios.get(url); }`,
     });
     expect(m.apiCalls).toEqual([expect.objectContaining({ endpointPattern: null, method: "GET" })]);
+  });
+
+  it("inlines string constants used in a URL", () => {
+    const m = extract({
+      "paths.ts": `export const REQUESTS = "/v1/service-requests";`,
+      "a.ts": `import axios from "axios";
+import { REQUESTS } from "./paths";
+const ORDERS = \`/v1/orders\`;
+export function load(id: string) {
+  axios.get(\`\${REQUESTS}/approval-list\`);
+  axios.get(ORDERS);
+  axios.get(REQUESTS + "/" + id);
+  axios.get(\`\${REQUESTS}/\${id}\`);
+}`,
+    });
+    expect(m.apiCalls.map((c) => c.endpointPattern)).toEqual([
+      "/v1/service-requests/approval-list",
+      "/v1/orders",
+      "/v1/service-requests/{param}",
+      "/v1/service-requests/{param}",
+    ]);
   });
 
   it("substitutes a wrapper's URL parameter at the call site", () => {

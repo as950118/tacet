@@ -11,6 +11,11 @@ export interface LinkingConfig {
   frontendBasePath?: string;
   /** Prefix the backend is served under, e.g. server.servlet.context-path "/api". */
   backendBasePath?: string;
+  /**
+   * Prefix rewrites a proxy or API gateway applies before the request reaches the backend, longest prefix
+   * first, e.g. { "/api/console": "" } maps "/api/console/admin/v1/users" to "/admin/v1/users".
+   */
+  pathRewrites?: Record<string, string>;
 }
 
 export interface TacetConfig {
@@ -23,6 +28,12 @@ export interface TacetConfig {
    * default export (or its only exported component) is used.
    */
   routes?: Record<string, string>;
+  /**
+   * Build-time env variables used to resolve axios `baseURL`s (`import.meta.env.VITE_API_PREFIX`).
+   * `envFiles` are dotenv files relative to the frontend root, read in order; `env` overrides them.
+   */
+  env?: Record<string, string>;
+  envFiles?: string[];
 }
 
 export function loadConfig(configPath: string | undefined): TacetConfig {

@@ -314,13 +314,23 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
   "apiClientMap": {
     "productApi.getProduct": { "method": "GET", "path": "/products/{id}" }
   },
-  "linking": { "frontendBasePath": "/api", "backendBasePath": "" },
+  "linking": {
+    "frontendBasePath": "/api",
+    "backendBasePath": "",
+    "pathRewrites": { "/api/console": "" }
+  },
+  "envFiles": ["apps/admin-web/.env"],
+  "env": { "VITE_API_PREFIX": "/api/admin" },
   "routes": { "/users/:id": "src/pages/User.tsx#UserPage" }
 }
 ```
 
 - `apiClientMap`: endpoint를 자동 추론할 수 없는 API client(예: 제네릭 `request({ method, url })` 헬퍼)의 명시적 매핑.
-- `linking`: frontend HTTP client의 baseURL, backend context-path 등 prefix 차이.
+- `linking`: frontend HTTP client의 baseURL, backend context-path 등 prefix 차이. `pathRewrites`는 proxy/API gateway가
+  backend로 넘기기 전에 바꾸는 prefix(긴 prefix 우선).
+- `envFiles` / `env`: axios `baseURL`에 쓰이는 build-time 환경변수(`import.meta.env.X`, `process.env.X`). `envFiles`는
+  frontend root 기준 dotenv 파일이고 `env`가 우선한다. 같은 코드를 여러 앱(예: admin/user)으로 빌드하면 앱별 config로
+  각각 검사한다.
 - `routes`: 자동 인식되지 않는 router의 페이지. `경로 → 파일[#컴포넌트]` (컴포넌트 생략 시 default export).
 
 ## 로드맵

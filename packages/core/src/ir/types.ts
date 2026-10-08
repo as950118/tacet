@@ -134,6 +134,11 @@ export interface PropertyAccessInfo {
   containingFunctionId: string | null;
   containingComponent: string | null;
   code: string;
+  /**
+   * Id of the `??` / `||` chain this read is one operand of (`a.metaData ?? a.meta_data`). Such reads are
+   * defensive alternatives: when another operand of the chain matches the response, this one is not an error.
+   */
+  fallbackGroup?: string;
 }
 
 export interface FrontendManifest {
