@@ -199,7 +199,10 @@ Pages → APIs (3):
 `pages/`·`views/`·`screens/` 디렉터리의 export된 컴포넌트를 (경로 없는) 페이지로 본다.
 
 HTML 탐색기: class별 레인 그래프, Page ↔ API 탭, triple 표, schema 다이어그램. Page ↔ API 탭은 "Pages → APIs" / "APIs → pages" 목록(영역별 그룹, 필터, broken만 보기)과
-선택한 항목의 API(또는 페이지)를 broken 먼저 보여주고, 펼치면 호출 경로와 읽는 필드가 나온다. 작은 프로젝트에서는 Page × API 매트릭스도 볼 수 있다. 그래프는 큰 프로젝트에서 전체를 그리지 않고
+선택한 항목의 API(또는 페이지)를 broken 먼저 보여주고, 펼치면 호출 경로와 읽는 필드가 나온다.
+목록은 경로 트리로 drill down 한다: 페이지는 `/aws` → `/aws/compute` → …, API는 method·role·version을 뺀 경로
+(`inventory` → `aws` → `compute` …). 상단 breadcrumb으로 범위를 오가고, 아무것도 고르지 않으면 그 범위의 요약
+(이 페이지들이 쓰는 API, 또는 이 API들을 쓰는 페이지, broken 먼저·빈도순)이 나온다. 그래프 탭의 페이지 목록도 같다. 작은 프로젝트에서는 Page × API 매트릭스도 볼 수 있다. 그래프는 큰 프로젝트에서 전체를 그리지 않고
 왼쪽 페이지 목록이나 검색(종류별 추천)에서 고른 하나를 중심으로 위·아래로 연결된 것만 다시 배치한다(깊이 1/2/3/전체, 이동 경로는
 breadcrumb). 기본값 "API paths only"는 API까지 이어지지 않는 UI 컴포넌트와 공용 formatter의 `reads` 연결을 숨긴다. 노드 클릭은
 경로 강조, 더블클릭은 그 노드로 재배치. 작은 프로젝트(150개 이하)는 처음부터 전체 그래프를 보여준다.

@@ -230,6 +230,7 @@ export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOpti
     </div>
     <input id="pa-filter" type="search" placeholder="Filter…" autocomplete="off">
     <label class="check"><input id="pa-broken" type="checkbox"> Only with broken APIs</label>
+    <button id="pa-only-common" class="chip-on" hidden title="Show all APIs again">Only common APIs ✕</button>
     <label class="check" id="pa-common-wrap" hidden><input id="pa-common" type="checkbox"> Include common APIs</label>
     <label class="check" id="pa-unused-wrap" hidden><input id="pa-unused" type="checkbox"> Include APIs no page uses</label>
   </div>
@@ -457,6 +458,29 @@ h2.section { font-size: 14px; margin: 20px 24px 8px; }
 .common-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .common-list li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12.5px; }
 .common-list .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+.tree-crumbs { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 2px 4px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+  position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.tree-crumbs button { border: 0; background: none; color: var(--accent); font: inherit; font-size: 12.5px; cursor: pointer; padding: 2px 4px; border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tree-crumbs button[aria-current="true"] { color: var(--text); font-weight: 700; cursor: default; }
+.tree-crumbs .sep { color: var(--muted); font-size: 12px; }
+.folder { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 0; background: none; color: var(--text); font: inherit;
+  padding: 7px 8px; border-radius: 6px; cursor: pointer; }
+.folder:hover { background: var(--bg); }
+.folder .fname { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; word-break: break-all; }
+.folder .fname::before { content: "▸ "; color: var(--muted); }
+.folder .n { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.folder .n .bad { color: var(--broken); margin-left: 6px; }
+.ov-row { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  font: inherit; border-radius: 8px; padding: 7px 10px; margin: 4px 0; cursor: pointer; }
+.ov-row:hover { border-color: var(--accent); }
+.ov-row.bad { border-color: color-mix(in srgb, var(--broken) 55%, var(--line)); }
+.ov-row .path { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+.ov-row .path small { display: block; color: var(--muted); font-family: inherit; }
+.link-btn.back { font-size: 12.5px; margin-bottom: 8px; }
+.chip-on { border: 1px solid var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 999px;
+  padding: 3px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
+.common-form .focus-btn { margin-top: 0; }
 .link-btn { border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
 .pa-detail .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: flex-start; }
 .pa-detail .actions .focus-btn { margin-top: 0; }
@@ -498,6 +522,74 @@ const SCRIPT = `
   function broken(e) { return e.status === "not-found" || e.status === "method-mismatch"; }
   /** An API a large share of all pages uses (permission check, icon fetch): hidden by default, it links every page to every other. */
   function isCommon(id) { var e = byId.get(id); return !!(e && e.class === "Endpoint" && e.attributes.common); }
+
+  // ---- path trees: drill down /aws → /aws/compute → …
+  function isParamSeg(x) { return x.charAt(0) === ":" || x.charAt(0) === "*" || x.charAt(0) === "{" || x.charAt(0) === "<" || x.indexOf("(") >= 0; }
+  /** "/aws/compute/ami/:amiId" → ["aws", "compute", "ami"]. */
+  function routeSegs(route) {
+    if (route === null || route === undefined) return ["(no path)"];
+    return route.split("/").filter(function (x) { return x && !isParamSeg(x); });
+  }
+  /** "GET /admin/v1/inventory/aws/compute/amis/{id}" → ["inventory", "aws", "compute", "amis"]: no method, role, version or params. */
+  function apiSegs(e) {
+    var path = (e.attributes && e.attributes.path) || e.label.split(" ").slice(1).join(" ");
+    var segs = String(path).split("/").filter(function (x) { return x && !isParamSeg(x) && !/^(api|admin|user|common|console|v\\d+)$/.test(x); });
+    return segs.length ? segs : ["(root)"];
+  }
+  function buildTree(items) {
+    var root = { name: "", segs: [], children: new Map(), items: [], count: 0, bad: 0 };
+    items.forEach(function (it) {
+      var node = root; root.count++; if (it.bad) root.bad++;
+      it.segs.forEach(function (seg) {
+        if (!node.children.has(seg)) node.children.set(seg, { name: seg, segs: node.segs.concat([seg]), children: new Map(), items: [], count: 0, bad: 0 });
+        node = node.children.get(seg); node.count++; if (it.bad) node.bad++;
+      });
+      node.items.push(it);
+    });
+    return root;
+  }
+  function subtreeItems(node, out) { node.items.forEach(function (it) { out.push(it); }); node.children.forEach(function (c) { subtreeItems(c, out); }); return out; }
+  /**
+   * Renders items as a drill-down tree inside "list": a breadcrumb of the scope, then its sub-folders (with item and
+   * broken counts; single-child chains merged, single-item folders shown as the item) and its own items. With a
+   * query, the matches anywhere under the scope are listed flat. Returns the scope node, its path and its items.
+   */
+  function renderTree(list, items, scope, opts) {
+    list.textContent = "";
+    var root = buildTree(items), node = root, path = [];
+    for (var i = 0; i < scope.length; i++) { var c = node.children.get(scope[i]); if (!c) break; node = c; path.push(scope[i]); }
+    var crumbs = el("div", "tree-crumbs"), all = el("button", null, "All");
+    all.setAttribute("aria-current", String(!path.length)); all.onclick = function () { opts.setScope([]); };
+    crumbs.appendChild(all);
+    path.forEach(function (seg, i) {
+      crumbs.appendChild(el("span", "sep", "/"));
+      var b = el("button", null, seg); b.setAttribute("aria-current", String(i === path.length - 1));
+      b.onclick = function () { opts.setScope(path.slice(0, i + 1)); };
+      crumbs.appendChild(b);
+    });
+    list.appendChild(crumbs);
+    var inScope = subtreeItems(node, []), shown = 0;
+    var add = function (it) { if (shown++ < 1500) list.appendChild(opts.renderItem(it)); };
+    if (opts.query) {
+      inScope.slice().sort(opts.sortItems).forEach(add);
+      return { node: node, path: path, items: inScope };
+    }
+    Array.from(node.children.values()).sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (child) {
+      if (child.count === 1) { add(subtreeItems(child, [])[0]); return; }
+      var label = child.name, target = child;
+      while (!target.items.length && target.children.size === 1) { target = target.children.values().next().value; label += "/" + target.name; }
+      var f = el("button", "folder");
+      f.appendChild(el("span", "fname", label + "/"));
+      var n = el("span", "n", String(child.count));
+      if (child.bad) n.appendChild(el("span", "bad", child.bad + " broken"));
+      f.appendChild(n);
+      f.title = "Show only /" + target.segs.join("/");
+      f.onclick = function () { opts.setScope(target.segs); };
+      list.appendChild(f);
+    });
+    node.items.slice().sort(opts.sortItems).forEach(add);
+    return { node: node, path: path, items: inScope };
+  }
 
   // ---- common-API rule: project default (tacet.config.json, baked into this file) or a personal one (this browser only)
   var DEF = O.commonApis || { share: 0.25, minPages: 8, include: [], exclude: [], threshold: 0 };
@@ -587,6 +679,11 @@ const SCRIPT = `
       personal = { share: r.share, minPages: v, include: r.include, exclude: r.exclude }; commonChanged();
     };
     minLabel.appendChild(min); minLabel.appendChild(document.createTextNode(" pages")); form.appendChild(minLabel);
+    if (commonCount) {
+      var show = el("button", "focus-btn", "Show in Page ↔ API");
+      show.onclick = function () { openApis(null, true); };
+      form.appendChild(show);
+    }
     if (personal) {
       var reset = el("button", "focus-btn", "Reset to project default");
       reset.onclick = function () { personal = null; commonChanged(); };
@@ -602,7 +699,11 @@ const SCRIPT = `
     var ul = el("ul", "common-list");
     list.forEach(function (e) {
       var li = el("li"), k = splitKey(e.label);
-      li.appendChild(methodBadge(k.method)); li.appendChild(el("span", "path", k.path));
+      li.appendChild(methodBadge(k.method));
+      var open = el("button", "link-btn path", k.path);
+      open.title = "Show the pages using this API";
+      open.onclick = function () { openApis(e.id, e.attributes.common); };
+      li.appendChild(open);
       li.appendChild(el("span", "badge", e.attributes.pages + " pages"));
       var why = r.include.indexOf(e.label) >= 0 ? "always (yours)" : r.exclude.indexOf(e.label) >= 0 ? "never (yours)" :
         DEF.include.indexOf(e.label) >= 0 ? "always (project)" : DEF.exclude.indexOf(e.label) >= 0 ? "never (project)" : "";
@@ -952,17 +1053,24 @@ const SCRIPT = `
     pageRows = O.pages.map(function (p) {
       var brokenN = p.apis.filter(function (a) { return a.status === "not-found" || a.status === "method-mismatch"; }).length;
       var own = p.apis.filter(function (a) { return !a.common; }).length;
-      return { p: p, broken: brokenN, own: own, text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
+      return { p: p, broken: brokenN, bad: brokenN, own: own, segs: routeSegs(p.route), text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
     });
   }
   buildPageRows();
+  var pageScope = [];
   pageFilter.addEventListener("input", renderPageList);
   function renderPageList() {
     var q = pageFilter.value.trim().toLowerCase(), list = document.getElementById("page-list");
-    list.textContent = "";
     var rows = pageRows.filter(function (r) { return !q || r.text.indexOf(q) >= 0; });
-    document.getElementById("page-count").textContent = rows.length + " of " + pageRows.length + " pages";
-    rows.slice(0, 600).forEach(function (r) {
+    var scoped = renderTree(list, rows, pageScope, {
+      query: q,
+      setScope: function (segs) { pageScope = segs; renderPageList(); },
+      sortItems: function (a, b) { return (a.p.route || "").localeCompare(b.p.route || ""); },
+      renderItem: pageRowButton,
+    });
+    document.getElementById("page-count").textContent = scoped.items.length + " of " + pageRows.length + " pages";
+  }
+  function pageRowButton(r) {
       var b = el("button", "page-item"); b.setAttribute("aria-current", String(r.p.page === focusId));
       b.appendChild(el("span", "route", r.p.route || r.p.component));
       var meta = el("span", "meta");
@@ -972,8 +1080,7 @@ const SCRIPT = `
       if (r.broken) meta.appendChild(el("span", "badge broken", r.broken + " broken"));
       b.appendChild(meta);
       b.onclick = function () { history = []; focus(r.p.page); };
-      list.appendChild(b);
-    });
+      return b;
   }
 
   // ---- search with suggestions
@@ -1117,7 +1224,7 @@ const SCRIPT = `
   }
 
   // ================================================================ page ↔ API
-  var paMode = "pages", paSelected = { pages: null, apis: null }, collapsed = new Set();
+  var paScope = { pages: [], apis: [] }, paOnlyCommon = false, paMode = "pages", paSelected = { pages: null, apis: null };
   var endpointsById = new Map(entities.filter(function (e) { return e.class === "Endpoint"; }).map(function (e) { return [e.id, e]; }));
   var usesByApi = new Map();
   O.pages.forEach(function (p) { p.apis.forEach(function (a) { push(usesByApi, a.endpoint, { page: p, use: a }); }); });
@@ -1126,11 +1233,11 @@ const SCRIPT = `
   function buildPaItems() {
     pageItems = O.pages.map(function (p) {
       var bad = p.apis.filter(isBrokenUse).length, own = p.apis.filter(function (a) { return !a.common; }).length;
-      return { id: p.page, p: p, bad: bad, own: own, group: pageGroup(p.route), text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
+      return { id: p.page, p: p, bad: bad, own: own, segs: routeSegs(p.route), text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
     });
     apiItems = Array.from(endpointsById.values()).map(function (e) {
       var uses = usesByApi.get(e.id) || [];
-      return { id: e.id, e: e, uses: uses, bad: broken(e) ? 1 : 0, common: !!e.attributes.common, group: e.attributes.common ? "common APIs" : apiGroup(e),
+      return { id: e.id, e: e, uses: uses, bad: broken(e) ? 1 : 0, common: !!e.attributes.common, segs: apiSegs(e),
         text: (e.label + " " + (e.detail || "")).toLowerCase() };
     });
     usedApiCount = apiItems.filter(function (a) { return a.uses.length && !a.common; }).length;
@@ -1138,20 +1245,6 @@ const SCRIPT = `
     pagesWithBroken = pageItems.filter(function (p) { return p.bad; }).length;
   }
   buildPaItems();
-  /** "/vsphere/datacenter/:id" → "/vsphere". */
-  function pageGroup(route) {
-    if (route === null || route === undefined) return "(no path)";
-    var seg = route.split("/").filter(Boolean)[0];
-    return seg ? "/" + seg : "/";
-  }
-  /** "GET /admin/v1/inventory/vsphere/datacenters" → "inventory/vsphere": the path without method, role and version segments. */
-  function apiGroup(e) {
-    var path = (e.attributes && e.attributes.path) || e.label.split(" ").slice(1).join(" ");
-    var segs = String(path).split("/").filter(function (x) {
-      return x && x.charAt(0) !== "{" && x.charAt(0) !== "<" && !/^(api|admin|user|common|console|v\\d+)$/.test(x);
-    });
-    return segs.slice(0, 2).join("/") || "(root)";
-  }
   function splitKey(label) { var i = label.indexOf(" "); return i > 0 ? { method: label.slice(0, i), path: label.slice(i + 1) } : { method: "ANY", path: label }; }
   function methodBadge(method) { return el("span", "method " + (/^(GET|POST|PUT|PATCH|DELETE)$/.test(method) ? method : "ANY"), method); }
 
@@ -1165,17 +1258,33 @@ const SCRIPT = `
       .concat(commonCount ? [["Common APIs (hidden)", commonCount, "common", false]] : []).forEach(function (x) {
       var b = el("button", x[3] && x[1] ? "alert" : "");
       b.appendChild(el("b", null, String(x[1]))); b.appendChild(el("span", null, x[0]));
-      b.setAttribute("aria-pressed", String(paMode === x[2] && document.getElementById("pa-broken").checked === x[3]));
+      var pressed = x[2] === "common" ? paMode === "apis" && paOnlyCommon
+        : paMode === x[2] && !paOnlyCommon && document.getElementById("pa-broken").checked === x[3];
+      b.setAttribute("aria-pressed", String(pressed));
       b.onclick = function () {
-        if (x[2] === "common") { setMode("apis"); document.getElementById("pa-common").checked = true; document.getElementById("pa-filter").value = ""; }
-        else setMode(x[2]);
+        if (x[2] === "common") { openApis(null, true); return; }
+        setMode(x[2]);
         document.getElementById("pa-broken").checked = x[3]; renderPa();
       };
       box.appendChild(b);
     });
   }
+  /** Page ↔ API tab, APIs → pages, with id selected; onlyCommon lists just the common APIs. */
+  function openApis(id, onlyCommon) {
+    showTab("matrix");
+    setMode("apis");
+    paOnlyCommon = !!onlyCommon;
+    document.getElementById("pa-filter").value = "";
+    document.getElementById("pa-broken").checked = false;
+    if (onlyCommon || isCommon(id)) document.getElementById("pa-common").checked = true;
+    paSelected.apis = id;
+    paScope.apis = [];
+    renderPa();
+  }
+  document.getElementById("pa-only-common").onclick = function () { paOnlyCommon = false; renderPa(); };
   function setMode(mode) {
     paMode = mode;
+    paOnlyCommon = false;
     document.querySelectorAll(".segmented button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.mode === mode)); });
     document.getElementById("pa-unused-wrap").hidden = mode !== "apis";
     document.getElementById("pa-common-wrap").hidden = mode !== "apis" || !commonCount;
@@ -1194,57 +1303,106 @@ const SCRIPT = `
       document.getElementById("pa-detail").textContent = "No pages found. Add routes to tacet.config.json, or use React Router / vue-router / Next.js / Remix routing.";
       return;
     }
+    document.getElementById("pa-only-common").hidden = !(paMode === "apis" && paOnlyCommon);
     var q = document.getElementById("pa-filter").value.trim().toLowerCase();
     var onlyBad = document.getElementById("pa-broken").checked, unused = document.getElementById("pa-unused").checked;
     var items = (paMode === "pages" ? pageItems : apiItems).filter(function (it) {
       if (paMode === "apis" && !unused && !it.uses.length) return false;
       if (paMode === "apis" && it.common && !document.getElementById("pa-common").checked) return false;
+      if (paMode === "apis" && paOnlyCommon && !it.common) return false;
       if (onlyBad && !it.bad) return false;
       return !q || it.text.indexOf(q) >= 0;
     });
-    items.sort(function (a, b) { return a.group.localeCompare(b.group) || (paMode === "pages" ? (a.p.route || "").localeCompare(b.p.route || "") : splitKey(a.e.label).path.localeCompare(splitKey(b.e.label).path)); });
     var total = paMode === "pages" ? pageItems.length : (unused ? apiItems.length : usedApiCount);
-    document.getElementById("pa-count").textContent = items.length + " of " + total + (paMode === "pages" ? " pages" : " APIs");
-
-    var list = document.getElementById("pa-list"); list.textContent = "";
-    var groups = new Map(); items.forEach(function (it) { push(groups, it.group, it); });
-    var shown = 0;
-    groups.forEach(function (members, name) {
-      var key = paMode + ":" + name, closed = collapsed.has(key) && !q;
-      var head = el("button", "group-head");
-      head.appendChild(el("span", null, (closed ? "▸ " : "▾ ") + name));
-      var n = el("span", "n", String(members.length)), bad = members.filter(function (m) { return m.bad; }).length;
-      if (bad) n.appendChild(el("span", "bad", bad + " broken"));
-      head.appendChild(n);
-      head.onclick = function () { if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key); renderPa(); };
-      list.appendChild(head);
-      if (closed) return;
-      members.forEach(function (it) {
-        if (shown++ > 1500) return;
-        var b = el("button", "page-item"); b.setAttribute("aria-current", String(paSelected[paMode] === it.id));
-        if (paMode === "pages") {
-          b.appendChild(el("span", "route", it.p.route || it.p.component));
-          var meta = el("span", "meta"); meta.appendChild(el("span", "comp", it.p.component));
-          meta.appendChild(el("span", "badge", it.own + " API" + (it.own === 1 ? "" : "s")));
-          if (it.bad) meta.appendChild(el("span", "badge broken", it.bad + " broken"));
-          b.appendChild(meta);
-        } else {
-          var k = splitKey(it.e.label), line = el("span", "meta");
-          line.appendChild(methodBadge(k.method)); line.appendChild(el("span", "route", k.path));
-          b.appendChild(line);
-          var meta2 = el("span", "meta");
-          meta2.appendChild(el("span", "badge" + (it.bad ? " broken" : ""), it.bad ? it.e.status.replace("-", " ") : it.uses.length + " page" + (it.uses.length === 1 ? "" : "s")));
-          if (it.bad) meta2.appendChild(el("span", "badge", it.uses.length + " page" + (it.uses.length === 1 ? "" : "s")));
-          b.appendChild(meta2);
-        }
-        b.onclick = function () { paSelected[paMode] = it.id; renderPa(); };
-        list.appendChild(b);
-      });
+    var list = document.getElementById("pa-list");
+    var scoped = renderTree(list, items, paScope[paMode], {
+      query: q,
+      setScope: function (segs) { paScope[paMode] = segs; paSelected[paMode] = null; renderPa(); },
+      sortItems: function (a, b) {
+        return paMode === "pages" ? (a.p.route || "").localeCompare(b.p.route || "") : splitKey(a.e.label).path.localeCompare(splitKey(b.e.label).path);
+      },
+      renderItem: paItemButton,
     });
-    if (!paSelected[paMode] || !items.some(function (it) { return it.id === paSelected[paMode]; })) paSelected[paMode] = items.length ? items[0].id : null;
+    document.getElementById("pa-count").textContent = scoped.items.length + " of " + total + (paMode === "pages" ? " pages" : " APIs");
+    if (paSelected[paMode] && !items.some(function (it) { return it.id === paSelected[paMode]; })) paSelected[paMode] = null;
+    paScopeView = scoped;
     renderPaDetail();
-    var current = list.querySelector('.page-item[aria-current="true"]');
-    if (!current) { var first = list.querySelector(".page-item"); if (first && paSelected[paMode] === (items[0] && items[0].id)) first.setAttribute("aria-current", "true"); }
+  }
+  var paScopeView = null;
+
+  function paItemButton(it) {
+    var b = el("button", "page-item"); b.setAttribute("aria-current", String(paSelected[paMode] === it.id));
+    if (paMode === "pages") {
+      b.appendChild(el("span", "route", it.p.route || it.p.component));
+      var meta = el("span", "meta"); meta.appendChild(el("span", "comp", it.p.component));
+      meta.appendChild(el("span", "badge", it.own + " API" + (it.own === 1 ? "" : "s")));
+      if (it.bad) meta.appendChild(el("span", "badge broken", it.bad + " broken"));
+      b.appendChild(meta);
+    } else {
+      var k = splitKey(it.e.label), line = el("span", "meta");
+      line.appendChild(methodBadge(k.method)); line.appendChild(el("span", "route", k.path));
+      b.appendChild(line);
+      var meta2 = el("span", "meta");
+      meta2.appendChild(el("span", "badge" + (it.bad ? " broken" : ""), it.bad ? it.e.status.replace("-", " ") : it.uses.length + " page" + (it.uses.length === 1 ? "" : "s")));
+      if (it.bad) meta2.appendChild(el("span", "badge", it.uses.length + " page" + (it.uses.length === 1 ? "" : "s")));
+      b.appendChild(meta2);
+    }
+    b.onclick = function () { paSelected[paMode] = it.id; renderPa(); };
+    return b;
+  }
+
+  /** Nothing selected: what the current group (scope) adds up to. */
+  function renderOverview(box, view) {
+    var where = (paMode === "apis" && paOnlyCommon ? "Common APIs" : "") + (view.path.length ? " /" + view.path.join("/") : paMode === "apis" && paOnlyCommon ? "" : "All " + (paMode === "pages" ? "pages" : "APIs"));
+    var head = el("div", "head"), title = el("div");
+    title.appendChild(el("h3", null, where));
+    var counts = el("div", "counts"), bad = view.items.filter(function (it) { return it.bad; }).length;
+    counts.appendChild(el("span", "badge", view.items.length + (paMode === "pages" ? " pages" : " APIs")));
+    if (bad) counts.appendChild(el("span", "badge broken", bad + (paMode === "pages" ? " with broken APIs" : " broken")));
+    title.appendChild(counts); head.appendChild(title); box.appendChild(head);
+    if (!view.items.length) { box.appendChild(el("p", "muted", "Nothing matches the filter.")); return; }
+    var rows = [];
+    if (paMode === "pages") {
+      var byApi = new Map();
+      view.items.forEach(function (it) {
+        it.p.apis.forEach(function (a) {
+          if (a.common) return;
+          if (!byApi.has(a.endpoint)) byApi.set(a.endpoint, { a: a, pages: 0 });
+          byApi.get(a.endpoint).pages++;
+        });
+      });
+      rows = Array.from(byApi.values()).sort(function (x, y) {
+        return (isBrokenUse(y.a) ? 1 : 0) - (isBrokenUse(x.a) ? 1 : 0) || y.pages - x.pages || x.a.apiKey.localeCompare(y.a.apiKey);
+      });
+      box.appendChild(el("h4", null, "APIs these pages use (" + rows.length + ")"));
+      rows.slice(0, 300).forEach(function (r) {
+        var b = el("button", "ov-row" + (isBrokenUse(r.a) ? " bad" : "")), k = splitKey(r.a.apiKey);
+        b.appendChild(methodBadge(k.method)); b.appendChild(el("span", "path", k.path));
+        if (isBrokenUse(r.a)) b.appendChild(el("span", "badge broken", r.a.status.replace("-", " ")));
+        b.appendChild(el("span", "badge", r.pages + " of " + view.items.length + " pages"));
+        b.onclick = function () { openApis(r.a.endpoint, false); };
+        box.appendChild(b);
+      });
+    } else {
+      var byPage = new Map();
+      view.items.forEach(function (it) {
+        it.uses.forEach(function (u) {
+          if (!byPage.has(u.page.page)) byPage.set(u.page.page, { p: u.page, apis: 0, bad: 0 });
+          var r = byPage.get(u.page.page); r.apis++; if (it.bad) r.bad++;
+        });
+      });
+      rows = Array.from(byPage.values()).sort(function (x, y) { return y.bad - x.bad || y.apis - x.apis || (x.p.route || "").localeCompare(y.p.route || ""); });
+      box.appendChild(el("h4", null, "Pages using these APIs (" + rows.length + ")"));
+      rows.slice(0, 300).forEach(function (r) {
+        var b = el("button", "ov-row" + (r.bad ? " bad" : ""));
+        var path = el("span", "path", r.p.route || r.p.component); path.appendChild(el("small", null, r.p.component)); b.appendChild(path);
+        if (r.bad) b.appendChild(el("span", "badge broken", r.bad + " broken"));
+        b.appendChild(el("span", "badge", r.apis + " of " + view.items.length + " APIs"));
+        b.onclick = function () { setMode("pages"); paScope.pages = []; paSelected.pages = r.p.page; document.getElementById("pa-filter").value = ""; renderPa(); };
+        box.appendChild(b);
+      });
+    }
+    if (rows.length > 300) box.appendChild(el("p", "muted small", "Showing the first 300; drill down or filter to narrow."));
   }
 
   function steps(via) {
@@ -1270,7 +1428,10 @@ const SCRIPT = `
   function renderPaDetail() {
     var box = document.getElementById("pa-detail"); box.textContent = "";
     var id = paSelected[paMode];
-    if (!id) { box.appendChild(el("p", "muted", "Nothing matches the filter.")); return; }
+    if (!id) { if (paScopeView) renderOverview(box, paScopeView); return; }
+    var back = el("button", "link-btn back", "‹ " + (paScopeView && paScopeView.path.length ? "/" + paScopeView.path.join("/") : "All") + " overview");
+    back.onclick = function () { paSelected[paMode] = null; renderPa(); };
+    box.appendChild(back);
     var head = el("div", "head"), title = el("div");
     if (paMode === "pages") {
       var it = pageItems.find(function (x) { return x.id === id; }), p = it.p;
