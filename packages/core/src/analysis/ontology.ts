@@ -87,6 +87,19 @@ export interface PageApiUse {
   via: string[];
   /** Response fields the page (or a component it renders) reads. */
   fields: string[];
+  /** A common API (used by a large share of all pages, e.g. a permission check or an icon fetch). */
+  common?: boolean;
+}
+
+/** Another page that uses some of the same APIs (common APIs left out). */
+export interface RelatedPage {
+  page: string;
+  route: string | null;
+  component: string;
+  /** How many (non-common) APIs both pages use. */
+  shared: number;
+  /** Those APIs, at most 10. */
+  apis: string[];
 }
 
 export interface PageApis {
@@ -96,6 +109,8 @@ export interface PageApis {
   component: string;
   file: string;
   apis: PageApiUse[];
+  /** Pages sharing the most (non-common) APIs with this one, at most 8. */
+  related?: RelatedPage[];
 }
 
 export interface Ontology {
@@ -442,6 +457,8 @@ export function buildOntology(model: ProjectModel, options: OntologyOptions = {}
 
   const { pages, uses } = inferPageApis(entities, kept, readsByEntity);
   kept.push(...uses);
+  markCommonApis(entities, pages);
+  relatePages(pages);
 
   const sorted = [...entities.values()].sort(
     (a, b) => CLASS_ORDER.indexOf(a.class) - CLASS_ORDER.indexOf(b.class) || a.label.localeCompare(b.label) || a.id.localeCompare(b.id),
@@ -558,6 +575,54 @@ function inferPageApis(
   }
   pages.sort((a, b) => (a.route ?? "\uffff").localeCompare(b.route ?? "\uffff") || a.component.localeCompare(b.component));
   return { pages, uses };
+}
+
+/** An API used by at least this share of all pages (and by at least COMMON_API_MIN_PAGES) is a common API. */
+export const COMMON_API_SHARE = 0.25;
+export const COMMON_API_MIN_PAGES = 8;
+
+/**
+ * Marks APIs nearly every page uses (a permission check in the layout, an icon fetch). They connect every page to
+ * every other, so views leave them out by default. Endpoint entities get `pages` (how many pages use them) and `common`.
+ */
+function markCommonApis(entities: Map<string, OntologyEntity>, pages: PageApis[]): void {
+  const counts = new Map<string, number>();
+  for (const page of pages) for (const api of page.apis) counts.set(api.endpoint, (counts.get(api.endpoint) ?? 0) + 1);
+  const threshold = Math.max(COMMON_API_MIN_PAGES, Math.ceil(pages.length * COMMON_API_SHARE));
+  const common = new Set([...counts].filter(([, n]) => n >= threshold).map(([id]) => id));
+  for (const e of entities.values()) {
+    if (e.class !== "Endpoint") continue;
+    e.attributes.pages = counts.get(e.id) ?? 0;
+    e.attributes.common = common.has(e.id);
+  }
+  for (const page of pages) for (const api of page.apis) if (common.has(api.endpoint)) api.common = true;
+}
+
+/** For each page, the pages sharing the most non-common APIs with it. */
+function relatePages(pages: PageApis[]): void {
+  const pagesByApi = new Map<string, PageApis[]>();
+  for (const page of pages) {
+    for (const api of page.apis) if (!api.common) (pagesByApi.get(api.endpoint) ?? pagesByApi.set(api.endpoint, []).get(api.endpoint)!).push(page);
+  }
+  for (const page of pages) {
+    const shared = new Map<PageApis, string[]>();
+    for (const api of page.apis) {
+      if (api.common) continue;
+      for (const other of pagesByApi.get(api.endpoint) ?? []) {
+        if (other !== page) (shared.get(other) ?? shared.set(other, []).get(other)!).push(api.apiKey);
+      }
+    }
+    page.related = [...shared]
+      .sort(([a, x], [b, y]) => y.length - x.length || (a.route ?? "").localeCompare(b.route ?? "") || a.page.localeCompare(b.page))
+      .slice(0, 8)
+      .map(([other, apis]) => ({
+        page: other.page,
+        route: other.route,
+        component: other.component,
+        shared: apis.length,
+        apis: apis.slice(0, 10),
+      }));
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -59,6 +59,25 @@ const facts = (o: Ontology, predicate?: string) =>
   o.triples.filter((tr) => !predicate || tr.predicate === predicate).map((tr) => `${label(o, tr.subject)} ${tr.predicate} ${label(o, tr.object)}`);
 
 describe("buildOntology", () => {
+  it("marks APIs most pages use as common and relates pages by the other APIs they share", () => {
+    const names = Array.from({ length: 10 }, (_, i) => `P${i}`);
+    const fns = names.map((n) => func(n, `src/pages/${n}.tsx`, {}, n));
+    const calls = names.flatMap((n, i) => [
+      call(`auth-${n}`, "GET", "/auth", { callerFunctionId: n, file: `src/pages/${n}.tsx` }),
+      call(`item-${n}`, "GET", i < 3 ? "/items" : `/other/${i}`, { callerFunctionId: n, file: `src/pages/${n}.tsx` }),
+      ...(i < 2 ? [call(`tag-${n}`, "GET", "/tags", { callerFunctionId: n, file: `src/pages/${n}.tsx` })] : []),
+    ]);
+    const manifest = { ...frontend(calls, [], fns), routes: names.map((n) => route(`r-${n}`, `/${n}`, n, n)) };
+    const o = buildOntology(new ProjectModel(manifest, null));
+    const auth = o.entities.find((e) => e.label === "GET /auth")!;
+    expect(auth.attributes).toMatchObject({ common: true, pages: 10 });
+    expect(o.entities.find((e) => e.label === "GET /items")!.attributes).toMatchObject({ common: false, pages: 3 });
+    const p0 = o.pages.find((p) => p.route === "/P0")!;
+    expect(p0.apis.find((a) => a.apiKey === "GET /auth")!.common).toBe(true);
+    expect(p0.related!.map((r) => `${r.route} ${r.shared}`)).toEqual(["/P1 2", "/P2 1"]);
+    expect(o.pages.find((p) => p.route === "/P9")!.related).toEqual([]);
+  });
+
   it("does not attribute an API to a page only because a shared helper read its data", () => {
     const fns = [
       func("Orders", "src/pages/Orders.tsx", { invokes: ["formatDate"] }, "Orders"),

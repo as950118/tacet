@@ -188,7 +188,9 @@ Pages → APIs (3):
 프로젝트를 엔티티(Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto, DtoField, Enum, File)와
 관계(`showsComponent`, `renders`, `calls`, `requests`, `reads`, `handledBy`, `accepts`, `returns`, `hasField`, `typedAs`,
 `definedIn`)로 표현한다. 관계마다 근거 코드 위치가 붙고, `usesApi`(페이지 → API)는 이 관계들을 따라가 추론한다.
-페이지가 실제로 요청하는 API만 연결하며, 공용 helper(`formatDate(row.createdAt)`)가 다른 API 데이터를 읽었다는 이유만으로는 연결하지 않는다.
+대부분의 페이지가 쓰는 API(권한 조회, 아이콘 fetch 등)는 "공통 API"로 표시되어 기본 보기와 관련 페이지 계산에서 빠지고,
+각 페이지에는 API를 함께 쓰는 "관련 페이지" 순위가 붙는다(`tacet relations --page`에도 나온다). 서로 렌더/호출하는
+컴포넌트는 그래프에서 노드 하나로 합쳐진다. 페이지가 실제로 요청하는 API만 연결하며, 공용 helper(`formatDate(row.createdAt)`)가 다른 API 데이터를 읽었다는 이유만으로는 연결하지 않는다.
 읽는 응답 필드는 실제 DTO 필드(`Profile.email`)에 연결된다.
 
 페이지는 React Router(`<Route>` JSX, route 객체, `lazy`), vue-router(`{ path, component: () => import("./X.vue") }`,

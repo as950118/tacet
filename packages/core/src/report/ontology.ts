@@ -189,6 +189,7 @@ export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOpti
       <select id="depth"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="0" selected>All</option></select>
     </label>
     <label class="check" title="Hide components and functions that lead to no API"><input id="api-paths" type="checkbox" checked> API paths only</label>
+    <label class="check" title="APIs most pages use (permission checks, icon fetches) connect every page to every other"><input id="hide-common" type="checkbox" checked> Hide common APIs</label>
     <label class="check"><input id="show-all" type="checkbox"> Whole graph</label>
     <div class="zoom">
       <button id="zoom-out" title="Zoom out">−</button>
@@ -225,6 +226,7 @@ export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOpti
     </div>
     <input id="pa-filter" type="search" placeholder="Filter…" autocomplete="off">
     <label class="check"><input id="pa-broken" type="checkbox"> Only with broken APIs</label>
+    <label class="check" id="pa-common-wrap" hidden><input id="pa-common" type="checkbox"> Include common APIs</label>
     <label class="check" id="pa-unused-wrap" hidden><input id="pa-unused" type="checkbox"> Include APIs no page uses</label>
   </div>
   <main class="pa-main" id="pa-main">
@@ -371,6 +373,7 @@ svg .lane { fill: var(--bg); }
 .node.broken rect { stroke: var(--broken) !important; stroke-width: 2; }
 .node.unused rect { stroke-dasharray: 4 3; opacity: .7; }
 .node.selected rect { stroke-width: 2.8; }
+.node.cycle rect { stroke-dasharray: 6 3; stroke-width: 2; }
 .node.focus rect { stroke-width: 3; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 45%, transparent)); }
 .node.match rect { stroke: var(--accent) !important; stroke-width: 2.6; }
 .edge { fill: none; stroke-width: 1.3; opacity: .55; }
@@ -441,6 +444,13 @@ h2.section { font-size: 14px; margin: 20px 24px 8px; }
 .steps .step { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
 .steps .arr { color: var(--muted); font-size: 11px; }
 .fields { display: flex; flex-wrap: wrap; gap: 4px; }
+.related { display: flex; flex-wrap: wrap; gap: 6px; }
+.related-item { display: inline-flex; gap: 8px; align-items: center; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit;
+  border-radius: 8px; padding: 5px 10px; cursor: pointer; max-width: 100%; }
+.related-item .route { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+.related-item:hover { border-color: var(--accent); }
+.common-group { margin-top: 16px; }
+.common-group > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 4px 0; }
 .fields code { font-size: 11.5px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--line); white-space: nowrap; }
 .pill.broken { color: var(--broken); border-color: var(--broken); }
@@ -469,6 +479,9 @@ const SCRIPT = `
     return dark ? { fill: "color-mix(in srgb, " + c.stroke + " 18%, #1c1c1f)", stroke: c.stroke, text: "#ececef" } : { fill: c.fill, stroke: c.stroke, text: c.color };
   }
   function broken(e) { return e.status === "not-found" || e.status === "method-mismatch"; }
+  /** An API a large share of all pages uses (permission check, icon fetch): hidden by default, it links every page to every other. */
+  function isCommon(id) { var e = byId.get(id); return !!(e && e.class === "Endpoint" && e.attributes.common); }
+  var commonCount = entities.filter(function (e) { return e.class === "Endpoint" && e.attributes.common; }).length;
 
   // ---- stats
   var statsEl = document.getElementById("stats");
@@ -528,12 +541,14 @@ const SCRIPT = `
       if (t.predicate !== "reads") { push(pOut, t.subject, t.object); push(pIn, t.object, t.subject); }
     });
   }
-  function walk(start, adj, depth) {
+  function walk(start, adj, depth, skip) {
     var seen = new Map([[start, 0]]), q = [start];
     while (q.length) {
       var id = q.shift(), d = seen.get(id);
       if (depth && d >= depth) continue;
-      (adj.get(id) || []).forEach(function (next) { if (!seen.has(next)) { seen.set(next, d + 1); q.push(next); } });
+      (adj.get(id) || []).forEach(function (next) {
+        if (!seen.has(next) && !(skip && skip(next))) { seen.set(next, d + 1); q.push(next); }
+      });
     }
     return seen;
   }
@@ -544,6 +559,8 @@ const SCRIPT = `
   var viewIds = new Set(), vOut = new Map(), vIn = new Map();
   var focusId = null, history = [], selected = null, query = "";
   var depthSel = document.getElementById("depth"), showAll = document.getElementById("show-all"), apiPaths = document.getElementById("api-paths");
+  var hideCommon = document.getElementById("hide-common");
+  var repOf = new Map(), cycleMembers = new Map();
   var shownCount = entities.filter(function (e) { return !hiddenClasses.has(e.class); }).length;
   showAll.checked = shownCount <= SMALL_GRAPH;
 
@@ -551,12 +568,15 @@ const SCRIPT = `
   function computeView() {
     if (focusId && !hiddenClasses.has(byId.get(focusId).class)) {
       var depth = Number(depthSel.value), ids = new Set();
-      var down = apiPaths.checked ? onApiPaths(walk(focusId, pOut, depth)) : walk(focusId, gOut, depth);
+      var skip = hideCommon.checked ? function (id) { return id !== focusId && isCommon(id); } : null;
+      var down = apiPaths.checked ? onApiPaths(walk(focusId, pOut, depth, skip)) : walk(focusId, gOut, depth, skip);
       down.forEach(function (_, id) { ids.add(id); });
-      walk(focusId, gIn, depth).forEach(function (_, id) { ids.add(id); });
+      walk(focusId, gIn, depth, skip).forEach(function (_, id) { ids.add(id); });
       return ids;
     }
-    if (showAll.checked) return new Set(entities.filter(function (e) { return !hiddenClasses.has(e.class); }).map(function (e) { return e.id; }));
+    if (showAll.checked) {
+      return new Set(entities.filter(function (e) { return !hiddenClasses.has(e.class) && !(hideCommon.checked && isCommon(e.id)); }).map(function (e) { return e.id; }));
+    }
     return new Set();
   }
 
@@ -579,6 +599,52 @@ const SCRIPT = `
 
   function rebuild() { rebuildAdjacency(); draw(); }
 
+  /**
+   * Components and functions that render or call each other in a loop (A → B → A) are drawn as one node, so every
+   * drawn edge points one way. Returns the view's relations with each cycle's members mapped to its first member.
+   */
+  function collapseCycles(vt) {
+    var adj = new Map();
+    vt.forEach(function (t) { if (t.predicate === "calls" || t.predicate === "renders") push(adj, t.subject, t.object); });
+    var index = 0, idx = new Map(), low = new Map(), stack = [], on = new Set();
+    repOf = new Map(); cycleMembers = new Map();
+    adj.forEach(function (_, root) {
+      if (idx.has(root)) return;
+      var work = [[root, 0]];
+      idx.set(root, index); low.set(root, index); index++; stack.push(root); on.add(root);
+      while (work.length) {
+        var top = work[work.length - 1], v = top[0], next = adj.get(v) || [];
+        if (top[1] < next.length) {
+          var w = next[top[1]++];
+          if (!idx.has(w)) { idx.set(w, index); low.set(w, index); index++; stack.push(w); on.add(w); work.push([w, 0]); }
+          else if (on.has(w)) low.set(v, Math.min(low.get(v), idx.get(w)));
+        } else {
+          work.pop();
+          if (work.length) { var u = work[work.length - 1][0]; low.set(u, Math.min(low.get(u), low.get(v))); }
+          if (low.get(v) === idx.get(v)) {
+            var comp = [], x;
+            do { x = stack.pop(); on.delete(x); comp.push(x); } while (x !== v);
+            if (comp.length > 1) {
+              comp.sort(function (a, b) { return byId.get(a).label.localeCompare(byId.get(b).label); });
+              comp.forEach(function (c) { repOf.set(c, comp[0]); });
+              cycleMembers.set(comp[0], comp);
+            }
+          }
+        }
+      }
+    });
+    if (!cycleMembers.size) return vt;
+    var seen = new Set(), out = [];
+    vt.forEach(function (t) {
+      var a = repOf.get(t.subject) || t.subject, b = repOf.get(t.object) || t.object, key = a + "\u0000" + t.predicate + "\u0000" + b;
+      if (a === b || seen.has(key)) return;
+      seen.add(key);
+      out.push(a === t.subject && b === t.object ? t : { subject: a, predicate: t.predicate, object: b, inferred: t.inferred, evidence: t.evidence });
+    });
+    return out;
+  }
+  function shown(id) { return repOf.get(id) || id; }
+
   function draw() {
     svg.textContent = "";
     viewIds = computeView();
@@ -588,11 +654,11 @@ const SCRIPT = `
     svg.style.display = viewIds.size ? "" : "none";
     if (!viewIds.size) { renderEmpty(); return; }
 
-    var vt = shownTriples.filter(function (t) { return viewIds.has(t.subject) && viewIds.has(t.object); });
+    var vt = collapseCycles(shownTriples.filter(function (t) { return viewIds.has(t.subject) && viewIds.has(t.object); }));
     vOut = new Map(); vIn = new Map();
     vt.forEach(function (t) { push(vOut, t.subject, t.object); push(vIn, t.object, t.subject); });
     var lanes = LANES.map(function () { return []; });
-    entities.forEach(function (e) { if (viewIds.has(e.id)) lanes[laneOf[e.class]].push(e); });
+    entities.forEach(function (e) { if (viewIds.has(e.id) && !(repOf.has(e.id) && repOf.get(e.id) !== e.id)) lanes[laneOf[e.class]].push(e); });
     var used = lanes.map(function (l, i) { return { i: i, nodes: l }; }).filter(function (l) { return l.nodes.length; });
     used.forEach(function (l) { l.nodes.sort(function (a, b) { return a.class.localeCompare(b.class) || a.label.localeCompare(b.label); }); });
     var pos = new Map();
@@ -647,14 +713,18 @@ const SCRIPT = `
     entities.forEach(function (n) {
       var p = xy.get(n.id); if (!p) return;
       var col = colors(n.class), w = wOf.get(n.id), chars = Math.floor((w - 20) / 7.2);
-      var g = s("g", { "class": "node" + (broken(n) ? " broken" : "") + (n.status === "unused" ? " unused" : "") + (n.id === focusId ? " focus" : ""),
+      var members = cycleMembers.get(n.id);
+      var g = s("g", { "class": "node" + (broken(n) ? " broken" : "") + (n.status === "unused" ? " unused" : "") + (members ? " cycle" : "") +
+        (n.id === shown(focusId) ? " focus" : ""),
         transform: "translate(" + p.x + "," + p.y + ")" });
       var box = s("rect", { width: w, height: H, rx: n.class === "Page" ? 3 : n.class === "Component" ? 20 : 7 });
       box.style.fill = col.fill; box.style.stroke = col.stroke; g.appendChild(box);
       var t1 = s("text", { x: 10, y: 19, fill: col.text }, n.class === "Endpoint" ? clipPath(n.label, chars) : clip(n.label, chars));
       t1.style.fill = col.text; g.appendChild(t1);
-      var t2 = s("text", { x: 10, y: 35, "class": "sub" }, clip(sub(n), chars + 4)); t2.style.fill = col.text; g.appendChild(t2);
-      g.appendChild(s("title", {}, n.class + ": " + n.label + (n.detail ? "\\n" + n.detail : "") + "\\nClick: highlight · Double-click: focus"));
+      var subText = members ? "⟲ cycle with " + members.slice(1).map(function (m) { return byId.get(m).label; }).join(", ") : sub(n);
+      var t2 = s("text", { x: 10, y: 35, "class": "sub" }, clip(subText, chars + 4)); t2.style.fill = col.text; g.appendChild(t2);
+      var tip = members ? "Render/call cycle: " + members.map(function (m) { return byId.get(m).label; }).join(" ⇄ ") : n.class + ": " + n.label + (n.detail ? "\\n" + n.detail : "");
+      g.appendChild(s("title", {}, tip + "\\nClick: highlight · Double-click: focus"));
       g.addEventListener("click", function (ev) { ev.stopPropagation(); select(n.id); });
       g.addEventListener("dblclick", function (ev) { ev.stopPropagation(); focus(n.id); });
       nodeLayer.appendChild(g);
@@ -692,6 +762,7 @@ const SCRIPT = `
   document.getElementById("zoom-reset").onclick = function () { scale = 1; applyZoom(); };
   document.getElementById("canvas").addEventListener("click", function () { select(null); });
   depthSel.onchange = draw;
+  hideCommon.onchange = function () { renderPageList(); draw(); };
   apiPaths.onchange = draw;
   showAll.onchange = function () { if (showAll.checked) { focusId = null; selected = null; renderDetails(); } draw(); };
 
@@ -746,7 +817,8 @@ const SCRIPT = `
   var pageFilter = document.getElementById("page-filter");
   var pageRows = O.pages.map(function (p) {
     var brokenN = p.apis.filter(function (a) { return a.status === "not-found" || a.status === "method-mismatch"; }).length;
-    return { p: p, broken: brokenN, text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
+    var own = p.apis.filter(function (a) { return !a.common; }).length;
+    return { p: p, broken: brokenN, own: own, text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
   });
   pageFilter.addEventListener("input", renderPageList);
   function renderPageList() {
@@ -759,7 +831,8 @@ const SCRIPT = `
       b.appendChild(el("span", "route", r.p.route || r.p.component));
       var meta = el("span", "meta");
       meta.appendChild(el("span", "comp", r.p.component));
-      meta.appendChild(el("span", "badge", r.p.apis.length + " API" + (r.p.apis.length === 1 ? "" : "s")));
+      var n = hideCommon.checked ? r.own : r.p.apis.length;
+      meta.appendChild(el("span", "badge", n + " API" + (n === 1 ? "" : "s")));
       if (r.broken) meta.appendChild(el("span", "badge broken", r.broken + " broken"));
       b.appendChild(meta);
       b.onclick = function () { history = []; focus(r.p.page); };
@@ -807,7 +880,7 @@ const SCRIPT = `
   });
 
   function scrollToNode(id) {
-    var p = xy.get(id), c = document.getElementById("canvas"); if (!p) return;
+    var p = xy.get(shown(id)), c = document.getElementById("canvas"); if (!p) return;
     c.scrollTo({ left: Math.max(0, p.x * scale - 80), top: Math.max(0, p.y * scale - c.clientHeight / 2), behavior: "smooth" });
   }
   function reach(start, adj) {
@@ -818,24 +891,24 @@ const SCRIPT = `
   /** Highlights an entity's connections within the current view; outside it, focuses the graph on the entity. */
   function select(id) {
     if (id && !viewIds.has(id)) { history = []; focus(id); return; }
-    selected = id;
+    selected = id ? shown(id) : id;
     refresh(); renderDetails();
   }
   function syncChips() {
     document.querySelectorAll("#classes input").forEach(function (cb) { cb.checked = !hiddenClasses.has(cb.dataset.key); });
   }
   function refresh() {
-    var hl = null;
-    if (selected && selected !== focusId && viewIds.has(selected)) { hl = reach(selected, vOut); reach(selected, vIn).forEach(function (id) { hl.add(id); }); }
+    var hl = null, sel = selected && shown(selected);
+    if (sel && sel !== shown(focusId) && viewIds.has(sel)) { hl = reach(sel, vOut); reach(sel, vIn).forEach(function (id) { hl.add(id); }); }
     var whole = !focusId;
     nodeEls.forEach(function (g, id) {
       var n = byId.get(id);
       g.classList.toggle("dim", !!((hl && !hl.has(id)) || (!hl && whole && query !== "" && !matches(n))));
       g.classList.toggle("match", matches(n));
-      g.classList.toggle("selected", id === selected);
+      g.classList.toggle("selected", id === sel);
     });
     edgeEls.forEach(function (x) {
-      var hot = hl ? hl.has(x.t.subject) && hl.has(x.t.object) : !!focusId && (x.t.subject === focusId || x.t.object === focusId);
+      var f = shown(focusId), hot = hl ? hl.has(x.t.subject) && hl.has(x.t.object) : !!focusId && (x.t.subject === f || x.t.object === f);
       x.el.classList.toggle("hot", hot); x.label.classList.toggle("hot", hot);
       x.el.classList.toggle("dim", !!(hl && !hot) || (!hl && whole && query !== ""));
     });
@@ -864,9 +937,19 @@ const SCRIPT = `
       var fb = el("button", "focus-btn", "Focus graph on this"); fb.onclick = function () { focus(selected); }; box.appendChild(fb);
     }
 
+    var cycle = cycleMembers.get(shown(n.id));
+    if (cycle) section("Render/call cycle (" + cycle.length + ")", cycle.map(function (id) { return { id: id }; }));
     if (n.class === "Page") {
       var row = O.pages.find(function (p) { return p.page === n.id; });
-      if (row) section("Uses APIs (" + row.apis.length + ")", row.apis.map(function (a) { return { id: a.endpoint, chain: a.via, fields: a.fields }; }));
+      if (row) {
+        var own = row.apis.filter(function (a) { return !a.common; }), shared = row.apis.filter(function (a) { return a.common; });
+        section("Uses APIs (" + own.length + ")", own.map(function (a) { return { id: a.endpoint, chain: a.via, fields: a.fields }; }));
+        section("Related pages (sharing APIs)", (row.related || []).map(function (r) { return { id: r.page, note: r.shared + " shared: " + r.apis.join(", ") }; }));
+        section("Common APIs (" + shared.length + ")", shared.map(function (a) { return { id: a.endpoint }; }));
+      }
+    }
+    if (n.class === "Endpoint" && n.attributes.common) {
+      box.appendChild(el("p", "muted", "Common API: " + n.attributes.pages + " pages use it, so it is hidden from other views by default."));
     }
     if (n.class === "Endpoint") {
       var using = [];
@@ -887,6 +970,7 @@ const SCRIPT = `
       items.forEach(function (it) {
         var li = el("li"); li.appendChild(entityLink(it.id));
         if (it.chain) li.appendChild(el("div", "chain", it.chain.join(" → ")));
+        if (it.note) li.appendChild(el("div", "chain", it.note));
         if (it.fields && it.fields.length) li.appendChild(el("div", "ev", "reads " + it.fields.join(", ")));
         (it.ev || []).forEach(function (e) { li.appendChild(el("div", "ev", e.file + ":" + e.line + "  " + e.code)); });
         ul.appendChild(li);
@@ -902,12 +986,13 @@ const SCRIPT = `
   O.pages.forEach(function (p) { p.apis.forEach(function (a) { push(usesByApi, a.endpoint, { page: p, use: a }); }); });
   function isBrokenUse(a) { return a.status === "not-found" || a.status === "method-mismatch"; }
   var pageItems = O.pages.map(function (p) {
-    var bad = p.apis.filter(isBrokenUse).length;
-    return { id: p.page, p: p, bad: bad, group: pageGroup(p.route), text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
+    var bad = p.apis.filter(isBrokenUse).length, own = p.apis.filter(function (a) { return !a.common; }).length;
+    return { id: p.page, p: p, bad: bad, own: own, group: pageGroup(p.route), text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
   });
   var apiItems = Array.from(endpointsById.values()).map(function (e) {
     var uses = usesByApi.get(e.id) || [];
-    return { id: e.id, e: e, uses: uses, bad: broken(e) ? 1 : 0, group: apiGroup(e), text: (e.label + " " + (e.detail || "")).toLowerCase() };
+    return { id: e.id, e: e, uses: uses, bad: broken(e) ? 1 : 0, common: !!e.attributes.common, group: e.attributes.common ? "common APIs" : apiGroup(e),
+      text: (e.label + " " + (e.detail || "")).toLowerCase() };
   });
   /** "/vsphere/datacenter/:id" → "/vsphere". */
   function pageGroup(route) {
@@ -926,7 +1011,7 @@ const SCRIPT = `
   function splitKey(label) { var i = label.indexOf(" "); return i > 0 ? { method: label.slice(0, i), path: label.slice(i + 1) } : { method: "ANY", path: label }; }
   function methodBadge(method) { return el("span", "method " + (/^(GET|POST|PUT|PATCH|DELETE)$/.test(method) ? method : "ANY"), method); }
 
-  var usedApiCount = apiItems.filter(function (a) { return a.uses.length; }).length;
+  var usedApiCount = apiItems.filter(function (a) { return a.uses.length && !a.common; }).length;
   var brokenApis = apiItems.filter(function (a) { return a.bad && a.uses.length; }).length;
   var pagesWithBroken = pageItems.filter(function (p) { return p.bad; }).length;
   var small = O.pages.length <= 40 && usedApiCount <= 80;
@@ -935,11 +1020,16 @@ const SCRIPT = `
   function summary() {
     var box = document.getElementById("pa-summary"); box.textContent = "";
     [["Pages", O.pages.length, "pages", false], ["APIs used by pages", usedApiCount, "apis", false],
-     ["Pages with broken APIs", pagesWithBroken, "pages", true], ["Broken APIs in use", brokenApis, "apis", true]].forEach(function (x) {
+     ["Pages with broken APIs", pagesWithBroken, "pages", true], ["Broken APIs in use", brokenApis, "apis", true]]
+      .concat(commonCount ? [["Common APIs (hidden)", commonCount, "common", false]] : []).forEach(function (x) {
       var b = el("button", x[3] && x[1] ? "alert" : "");
       b.appendChild(el("b", null, String(x[1]))); b.appendChild(el("span", null, x[0]));
       b.setAttribute("aria-pressed", String(paMode === x[2] && document.getElementById("pa-broken").checked === x[3]));
-      b.onclick = function () { setMode(x[2]); document.getElementById("pa-broken").checked = x[3]; renderPa(); };
+      b.onclick = function () {
+        if (x[2] === "common") { setMode("apis"); document.getElementById("pa-common").checked = true; document.getElementById("pa-filter").value = ""; }
+        else setMode(x[2]);
+        document.getElementById("pa-broken").checked = x[3]; renderPa();
+      };
       box.appendChild(b);
     });
   }
@@ -947,9 +1037,10 @@ const SCRIPT = `
     paMode = mode;
     document.querySelectorAll(".segmented button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.mode === mode)); });
     document.getElementById("pa-unused-wrap").hidden = mode !== "apis";
+    document.getElementById("pa-common-wrap").hidden = mode !== "apis" || !commonCount;
   }
   document.querySelectorAll(".segmented button").forEach(function (b) { b.onclick = function () { setMode(b.dataset.mode); renderPa(); }; });
-  ["pa-filter", "pa-broken", "pa-unused"].forEach(function (id) { document.getElementById(id).addEventListener(id === "pa-filter" ? "input" : "change", renderPa); });
+  ["pa-filter", "pa-broken", "pa-unused", "pa-common"].forEach(function (id) { document.getElementById(id).addEventListener(id === "pa-filter" ? "input" : "change", renderPa); });
 
   function renderPa() {
     summary();
@@ -966,6 +1057,7 @@ const SCRIPT = `
     var onlyBad = document.getElementById("pa-broken").checked, unused = document.getElementById("pa-unused").checked;
     var items = (paMode === "pages" ? pageItems : apiItems).filter(function (it) {
       if (paMode === "apis" && !unused && !it.uses.length) return false;
+      if (paMode === "apis" && it.common && !document.getElementById("pa-common").checked) return false;
       if (onlyBad && !it.bad) return false;
       return !q || it.text.indexOf(q) >= 0;
     });
@@ -992,7 +1084,7 @@ const SCRIPT = `
         if (paMode === "pages") {
           b.appendChild(el("span", "route", it.p.route || it.p.component));
           var meta = el("span", "meta"); meta.appendChild(el("span", "comp", it.p.component));
-          meta.appendChild(el("span", "badge", it.p.apis.length + " API" + (it.p.apis.length === 1 ? "" : "s")));
+          meta.appendChild(el("span", "badge", it.own + " API" + (it.own === 1 ? "" : "s")));
           if (it.bad) meta.appendChild(el("span", "badge broken", it.bad + " broken"));
           b.appendChild(meta);
         } else {
@@ -1043,13 +1135,32 @@ const SCRIPT = `
       var it = pageItems.find(function (x) { return x.id === id; }), p = it.p;
       title.appendChild(el("h3", null, p.route || p.component));
       title.appendChild(el("div", "sub", p.component + " · " + p.file));
-      var counts = el("div", "counts"); counts.appendChild(el("span", "badge", p.apis.length + " APIs"));
+      var counts = el("div", "counts"); counts.appendChild(el("span", "badge", it.own + " APIs"));
+      if (it.own !== p.apis.length) counts.appendChild(el("span", "badge", "+" + (p.apis.length - it.own) + " common"));
       if (it.bad) counts.appendChild(el("span", "badge broken", it.bad + " broken"));
       title.appendChild(counts); head.appendChild(title); head.appendChild(graphButton(p.page)); box.appendChild(head);
       var sorted = p.apis.slice().sort(function (a, b) { return (isBrokenUse(b) ? 1 : 0) - (isBrokenUse(a) ? 1 : 0) || splitKey(a.apiKey).path.localeCompare(splitKey(b.apiKey).path); });
-      var bad = sorted.filter(isBrokenUse), ok = sorted.filter(function (a) { return !isBrokenUse(a); });
+      var bad = sorted.filter(isBrokenUse), ok = sorted.filter(function (a) { return !isBrokenUse(a) && !a.common; });
+      var commonUses = sorted.filter(function (a) { return !isBrokenUse(a) && a.common; });
       if (bad.length) { box.appendChild(el("h4", null, "Broken (" + bad.length + ")")); bad.forEach(function (a) { box.appendChild(apiUse(a)); }); }
       if (ok.length) { box.appendChild(el("h4", null, "APIs (" + ok.length + ")")); ok.forEach(function (a) { box.appendChild(apiUse(a)); }); }
+      if ((p.related || []).length) {
+        box.appendChild(el("h4", null, "Related pages (sharing APIs)"));
+        var rl = el("div", "related");
+        p.related.forEach(function (r) {
+          var b = el("button", "related-item");
+          b.appendChild(el("span", "route", r.route || r.component));
+          b.appendChild(el("span", "badge", r.shared + " shared"));
+          b.title = r.apis.join("\\n");
+          b.onclick = function () { paSelected.pages = r.page; document.getElementById("pa-filter").value = ""; document.getElementById("pa-broken").checked = false; renderPa(); };
+          rl.appendChild(b);
+        });
+        box.appendChild(rl);
+      }
+      if (commonUses.length) {
+        var cd = el("details", "common-group"), cs = el("summary", null, "Common APIs (" + commonUses.length + ") — used by most pages");
+        cd.appendChild(cs); commonUses.forEach(function (a) { cd.appendChild(apiUse(a)); }); box.appendChild(cd);
+      }
     } else {
       var api = apiItems.find(function (x) { return x.id === id; }), k = splitKey(api.e.label);
       var line = el("div", "meta"); line.appendChild(methodBadge(k.method)); line.appendChild(el("h3", null, k.path)); title.appendChild(line);
@@ -1057,6 +1168,7 @@ const SCRIPT = `
       var c = el("div", "counts");
       c.appendChild(el("span", "pill" + (api.bad ? " broken" : api.e.status === "unused" ? " unused" : ""), api.e.status || ""));
       c.appendChild(el("span", "badge", api.uses.length + " pages"));
+      if (api.common) c.appendChild(el("span", "badge", "common API"));
       title.appendChild(c); head.appendChild(title); head.appendChild(graphButton(api.e.id)); box.appendChild(head);
       if (!api.uses.length) box.appendChild(el("p", "muted", "No page uses this API."));
       else {

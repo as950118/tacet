@@ -149,6 +149,8 @@ export interface RelationsResult {
   entities: Record<string, Pick<OntologyEntity, "class" | "label" | "file" | "line" | "status">>;
   relations: OntologyTriple[];
   pageApis: StoredPageApi[];
+  /** With `page`: pages sharing the most non-common APIs with it. */
+  relatedPages: Array<{ of: string; page: string; shared: number; apis: string[] }>;
 }
 
 export interface CheckOptions {
@@ -334,7 +336,13 @@ export class TacetWorkspace {
         return found.map((e) => e.id);
       };
       const pageApis: StoredPageApi[] = [];
-      if (query.page !== undefined) for (const id of resolve(query.page, "Page")) pageApis.push(...store.pageApis({ page: id }));
+      const relatedPages: RelationsResult["relatedPages"] = [];
+      if (query.page !== undefined) {
+        for (const id of resolve(query.page, "Page")) {
+          pageApis.push(...store.pageApis({ page: id }));
+          relatedPages.push(...store.relatedPages(id).map((r) => ({ of: id, ...r })));
+        }
+      }
       if (query.api !== undefined) {
         const ids = store.findEntitiesByKey(query.api, "Endpoint").length ? resolve(query.api, "Endpoint") : resolve(`api:${query.api}`, "Endpoint");
         for (const id of ids) pageApis.push(...store.pageApis({ endpoint: id }));
@@ -349,10 +357,13 @@ export class TacetWorkspace {
           }
         }
       }
-      for (const id of new Set([...relations.flatMap((t) => [t.subject, t.object]), ...pageApis.flatMap((u) => [u.page, u.endpoint])])) {
-        if (!entities[id]) note(store.getEntity(id));
-      }
-      return { entities, relations, pageApis };
+      const ids = [
+        ...relations.flatMap((t) => [t.subject, t.object]),
+        ...pageApis.flatMap((u) => [u.page, u.endpoint]),
+        ...relatedPages.map((r) => r.page),
+      ];
+      for (const id of new Set(ids)) if (!entities[id]) note(store.getEntity(id));
+      return { entities, relations, pageApis, relatedPages };
     });
   }
 

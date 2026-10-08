@@ -103,7 +103,7 @@ describe("IndexStore", () => {
     db.exec("CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT)");
     db.close();
     store = IndexStore.open(path);
-    expect(store.getMeta("schemaVersion")).toBe("4");
+    expect(store.getMeta("schemaVersion")).toBe("5");
     expect(store.writeManifest(sampleFrontend()).summary.files).toBe(2);
   });
 });

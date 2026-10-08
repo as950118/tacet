@@ -12,7 +12,7 @@ import type {
   PropertyAccessInfo,
   RouteInfo,
 } from "../ir/types.js";
-import type { Ontology, OntologyEntity, OntologyTriple, PageApiUse } from "../analysis/ontology.js";
+import type { Ontology, OntologyEntity, OntologyTriple, PageApiUse, RelatedPage } from "../analysis/ontology.js";
 import { RELATION_TABLES, SCHEMA_SQL, SCHEMA_VERSION, TABLES } from "./schema.js";
 
 /** A row of `page_apis`: one page using one API. */
@@ -213,13 +213,15 @@ export class IndexStore {
         relation.run(t.subject, t.predicate, t.object, t.inferred ? 1 : 0, JSON.stringify(t));
       }
       const use = this.db.prepare(
-        "INSERT OR REPLACE INTO page_apis (page, endpoint, api_key, status, via, fields) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO page_apis (page, endpoint, api_key, status, via, fields, common) VALUES (?, ?, ?, ?, ?, ?, ?)",
       );
+      const related = this.db.prepare("INSERT OR REPLACE INTO related_pages (page, related, shared, apis) VALUES (?, ?, ?, ?)");
       for (const page of ontology.pages) {
         for (const api of page.apis) {
-          use.run(page.page, api.endpoint, api.apiKey, api.status, JSON.stringify(api.via), JSON.stringify(api.fields));
+          use.run(page.page, api.endpoint, api.apiKey, api.status, JSON.stringify(api.via), JSON.stringify(api.fields), api.common ? 1 : 0);
           pageApis++;
         }
+        for (const r of page.related ?? []) related.run(page.page, r.page, r.shared, JSON.stringify(r.apis));
       }
       this.setMeta("relations.generatedAt", new Date().toISOString());
     });
@@ -369,8 +371,8 @@ export class IndexStore {
   pageApis(by: { page?: string; endpoint?: string }): StoredPageApi[] {
     const [column, value] = by.page !== undefined ? ["page", by.page] : ["endpoint", by.endpoint ?? ""];
     const rows = this.db
-      .prepare(`SELECT page, endpoint, api_key, status, via, fields FROM page_apis WHERE ${column} = ? ORDER BY page, api_key`)
-      .all(value) as Array<{ page: string; endpoint: string; api_key: string; status: string | null; via: string; fields: string }>;
+      .prepare(`SELECT page, endpoint, api_key, status, via, fields, common FROM page_apis WHERE ${column} = ? ORDER BY page, common, api_key`)
+      .all(value) as Array<{ page: string; endpoint: string; api_key: string; status: string | null; via: string; fields: string; common: number }>;
     return rows.map((r) => ({
       page: r.page,
       endpoint: r.endpoint,
@@ -378,7 +380,16 @@ export class IndexStore {
       status: r.status as PageApiUse["status"],
       via: JSON.parse(r.via) as string[],
       fields: JSON.parse(r.fields) as string[],
+      ...(r.common ? { common: true } : {}),
     }));
+  }
+
+  /** Pages sharing the most non-common APIs with a page (page entity id). */
+  relatedPages(page: string): Array<Omit<RelatedPage, "route" | "component">> {
+    const rows = this.db
+      .prepare("SELECT related, shared, apis FROM related_pages WHERE page = ? ORDER BY shared DESC, related")
+      .all(page) as Array<{ related: string; shared: number; apis: string }>;
+    return rows.map((r) => ({ page: r.related, shared: r.shared, apis: JSON.parse(r.apis) as string[] }));
   }
 
   /** The frontend manifest stored in the index, or null when no frontend has been indexed. */

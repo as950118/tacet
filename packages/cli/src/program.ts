@@ -405,10 +405,15 @@ function formatRelations(result: RelationsResult): string {
   if (result.pageApis.length) {
     lines.push(`Page → API (${result.pageApis.length}):`);
     for (const use of result.pageApis) {
-      lines.push(`  ${label(use.page)}  →  ${use.apiKey}${use.status && use.status !== "matched" ? `  [${use.status}]` : ""}`);
+      const tags = [use.status && use.status !== "matched" ? use.status : null, use.common ? "common" : null].filter(Boolean);
+      lines.push(`  ${label(use.page)}  →  ${use.apiKey}${tags.length ? `  [${tags.join(", ")}]` : ""}`);
       lines.push(`      via ${use.via.slice(1, -1).join(" → ") || "(direct)"}`);
       if (use.fields.length) lines.push(`      reads ${use.fields.join(", ")}`);
     }
+  }
+  if (result.relatedPages.length) {
+    lines.push("", `Related pages (sharing non-common APIs):`);
+    for (const r of result.relatedPages) lines.push(`  ${label(r.page)}  ${r.shared} shared  ${r.apis.slice(0, 3).join(", ")}${r.apis.length > 3 ? ", …" : ""}`);
   }
   if (result.relations.length) {
     if (lines.length) lines.push("");
