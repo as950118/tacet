@@ -198,7 +198,7 @@ export class IndexStore {
    * Replaces the stored relations with an ontology built from the current facts. Relations are derived data,
    * so they are rewritten as a whole (in one transaction) rather than synced row by row.
    */
-  writeRelations(ontology: Ontology): { entities: number; relations: number; pageApis: number } {
+  writeRelations(ontology: Ontology, config: TacetConfig = {}): { entities: number; relations: number; pageApis: number } {
     let pageApis = 0;
     this.transaction(() => {
       for (const table of RELATION_TABLES) this.db.exec(`DELETE FROM ${table}`);
@@ -224,6 +224,8 @@ export class IndexStore {
         for (const r of page.related ?? []) related.run(page.page, r.page, r.shared, JSON.stringify(r.apis));
       }
       this.setMeta("relations.generatedAt", new Date().toISOString());
+      this.setMeta("relations.config", JSON.stringify(config));
+      this.setMeta("relations.commonApis", JSON.stringify(ontology.commonApis ?? null));
     });
     return { entities: ontology.entities.length, relations: ontology.triples.length, pageApis };
   }
@@ -335,6 +337,11 @@ export class IndexStore {
 
   hasRelations(): boolean {
     return this.getMeta("relations.generatedAt") !== null;
+  }
+
+  /** Whether the stored relations were built with this config (e.g. the same common-API rule). */
+  relationsBuiltWith(config: TacetConfig): boolean {
+    return this.getMeta("relations.config") === JSON.stringify(config);
   }
 
   getEntity(id: string): OntologyEntity | null {

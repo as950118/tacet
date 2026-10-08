@@ -318,13 +318,16 @@ export class TacetWorkspace {
    */
   private writeRelations(store: IndexStore): void {
     if (store.readFrontendManifest() === null) return;
-    store.writeRelations(buildOntology(this.modelFrom(store), { includeUnrelated: true }));
+    const model = this.modelFrom(store);
+    store.writeRelations(buildOntology(model, { includeUnrelated: true }), model.config);
   }
 
   /** Queries the stored relations: a page's APIs, an API's pages, or relations by subject / predicate / object. */
   relations(query: RelationsQuery): RelationsResult {
     return this.withStore((store) => {
-      if (!store.hasRelations()) this.writeRelations(store);
+      // A different config (e.g. --config with another commonApis rule) rebuilds the stored relations.
+      const config = this.configPath ? loadConfig(this.configPath) : store.readConfig();
+      if (!store.hasRelations() || !store.relationsBuiltWith(config)) this.writeRelations(store);
       const entities: RelationsResult["entities"] = {};
       const note = (e: OntologyEntity | null) => {
         if (e) entities[e.id] = { class: e.class, label: e.label, file: e.file, line: e.line, status: e.status };

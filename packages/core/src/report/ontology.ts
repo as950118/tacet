@@ -177,6 +177,10 @@ export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOpti
   <button role="tab" data-tab="triples">Triples</button>
   <button role="tab" data-tab="schema">Schema</button>
 </nav>
+<details id="common-panel" class="common-panel">
+  <summary id="common-summary"></summary>
+  <div id="common-body" class="common-body"></div>
+</details>
 
 <section id="tab-graph" class="tab">
   <div class="toolbar">
@@ -444,6 +448,19 @@ h2.section { font-size: 14px; margin: 20px 24px 8px; }
 .steps .step { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
 .steps .arr { color: var(--muted); font-size: 11px; }
 .fields { display: flex; flex-wrap: wrap; gap: 4px; }
+.common-panel { margin: 0 24px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
+.common-panel > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.common-body { padding: 10px 0 4px; }
+.common-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.common-form input[type=range] { width: 160px; accent-color: var(--accent); }
+.common-form input[type=number] { width: 72px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+.common-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.common-list li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12.5px; }
+.common-list .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+.link-btn { border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+.pa-detail .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: flex-start; }
+.pa-detail .actions .focus-btn { margin-top: 0; }
+@media (max-width: 600px) { .common-panel { margin: 0 16px 12px; } }
 .related { display: flex; flex-wrap: wrap; gap: 6px; }
 .related-item { display: inline-flex; gap: 8px; align-items: center; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit;
   border-radius: 8px; padding: 5px 10px; cursor: pointer; max-width: 100%; }
@@ -481,7 +498,122 @@ const SCRIPT = `
   function broken(e) { return e.status === "not-found" || e.status === "method-mismatch"; }
   /** An API a large share of all pages uses (permission check, icon fetch): hidden by default, it links every page to every other. */
   function isCommon(id) { var e = byId.get(id); return !!(e && e.class === "Endpoint" && e.attributes.common); }
-  var commonCount = entities.filter(function (e) { return e.class === "Endpoint" && e.attributes.common; }).length;
+
+  // ---- common-API rule: project default (tacet.config.json, baked into this file) or a personal one (this browser only)
+  var DEF = O.commonApis || { share: 0.25, minPages: 8, include: [], exclude: [], threshold: 0 };
+  var COMMON_KEY = "tacet.commonApis:" + (O.rootDir || data.title);
+  var personal = loadPersonal();
+  function loadPersonal() {
+    try {
+      var v = JSON.parse(localStorage.getItem(COMMON_KEY) || "null");
+      if (v && typeof v.share === "number" && typeof v.minPages === "number") return { share: v.share, minPages: v.minPages, include: v.include || [], exclude: v.exclude || [] };
+    } catch (e) { /* storage unavailable */ }
+    return null;
+  }
+  function savePersonal() {
+    try { if (personal) localStorage.setItem(COMMON_KEY, JSON.stringify(personal)); else localStorage.removeItem(COMMON_KEY); } catch (e) { /* storage unavailable */ }
+  }
+  function currentRule() { return personal || { share: DEF.share, minPages: DEF.minPages, include: [], exclude: [] }; }
+  var usageCount = new Map();
+  O.pages.forEach(function (p) { p.apis.forEach(function (a) { usageCount.set(a.endpoint, (usageCount.get(a.endpoint) || 0) + 1); }); });
+  var commonCount = 0, commonThreshold = 0;
+  /** Marks common APIs by the current rule (personal overrides beat project include/exclude) and recomputes related pages. */
+  function applyCommon() {
+    var r = currentRule();
+    commonThreshold = Math.max(r.minPages, Math.ceil(O.pages.length * r.share));
+    commonCount = 0;
+    entities.forEach(function (e) {
+      if (e.class !== "Endpoint") return;
+      var c = (usageCount.get(e.id) || 0) >= commonThreshold;
+      if (DEF.include.indexOf(e.label) >= 0) c = true;
+      if (DEF.exclude.indexOf(e.label) >= 0) c = false;
+      if (r.include.indexOf(e.label) >= 0) c = true;
+      if (r.exclude.indexOf(e.label) >= 0) c = false;
+      e.attributes.common = c; e.attributes.pages = usageCount.get(e.id) || 0;
+      if (c) commonCount++;
+    });
+    O.pages.forEach(function (p) { p.apis.forEach(function (a) { a.common = isCommon(a.endpoint); }); });
+    var byApi = new Map();
+    O.pages.forEach(function (p) { p.apis.forEach(function (a) { if (!a.common) push(byApi, a.endpoint, p); }); });
+    O.pages.forEach(function (p) {
+      var shared = new Map();
+      p.apis.forEach(function (a) {
+        if (a.common) return;
+        (byApi.get(a.endpoint) || []).forEach(function (o) { if (o !== p) { if (!shared.has(o)) shared.set(o, []); shared.get(o).push(a.apiKey); } });
+      });
+      p.related = Array.from(shared.entries())
+        .sort(function (x, y) { return y[1].length - x[1].length || (x[0].route || "").localeCompare(y[0].route || "") || x[0].page.localeCompare(y[0].page); })
+        .slice(0, 8)
+        .map(function (x) { return { page: x[0].page, route: x[0].route, component: x[0].component, shared: x[1].length, apis: x[1].slice(0, 10) }; });
+    });
+  }
+  applyCommon();
+
+  /** Personal override for one API: true = always common, false = never, null = follow the rule. */
+  function setCommonOverride(label, value) {
+    var r = currentRule();
+    personal = { share: r.share, minPages: r.minPages, include: r.include.filter(function (x) { return x !== label; }), exclude: r.exclude.filter(function (x) { return x !== label; }) };
+    if (value === true) personal.include.push(label);
+    if (value === false) personal.exclude.push(label);
+    commonChanged();
+  }
+  function commonChanged() {
+    savePersonal(); applyCommon();
+    buildPageRows(); buildPaItems();
+    renderCommonPanel(); draw(); renderDetails(); renderPa();
+  }
+  function commonToggle(e) {
+    var b = el("button", "focus-btn", e.attributes.common ? "Don't treat as common" : "Treat as common");
+    b.onclick = function () { setCommonOverride(e.label, !e.attributes.common); };
+    return b;
+  }
+
+  function renderCommonPanel() {
+    var r = currentRule();
+    document.getElementById("common-summary").textContent = "Common APIs: " + commonCount + " hidden · used by ≥ " + Math.round(r.share * 100) +
+      "% of pages, at least " + r.minPages + " (≥ " + commonThreshold + " pages) · " + (personal ? "your setting" : "project default");
+    var body = document.getElementById("common-body"); body.textContent = "";
+    var form = el("div", "common-form");
+    var shareLabel = el("label", "check", "Share of pages ");
+    var share = el("input"); share.type = "range"; share.min = "5"; share.max = "100"; share.step = "5"; share.value = String(Math.round(r.share * 100));
+    var shareOut = el("b", null, share.value + "%");
+    share.oninput = function () { shareOut.textContent = share.value + "%"; };
+    share.onchange = function () { personal = { share: Number(share.value) / 100, minPages: r.minPages, include: r.include, exclude: r.exclude }; commonChanged(); };
+    shareLabel.appendChild(share); shareLabel.appendChild(shareOut); form.appendChild(shareLabel);
+    var minLabel = el("label", "check", "At least ");
+    var min = el("input"); min.type = "number"; min.min = "1"; min.max = String(Math.max(1, O.pages.length)); min.value = String(r.minPages);
+    min.onchange = function () {
+      var v = Math.max(1, Math.floor(Number(min.value) || 1));
+      personal = { share: r.share, minPages: v, include: r.include, exclude: r.exclude }; commonChanged();
+    };
+    minLabel.appendChild(min); minLabel.appendChild(document.createTextNode(" pages")); form.appendChild(minLabel);
+    if (personal) {
+      var reset = el("button", "focus-btn", "Reset to project default");
+      reset.onclick = function () { personal = null; commonChanged(); };
+      form.appendChild(reset);
+    }
+    body.appendChild(form);
+    body.appendChild(el("p", "muted small", "Saved in this browser only. The project default (" + Math.round(DEF.share * 100) + "%, at least " + DEF.minPages +
+      " pages" + (DEF.include.length || DEF.exclude.length ? ", " + DEF.include.length + " always / " + DEF.exclude.length + " never" : "") +
+      ") comes from commonApis in tacet.config.json and is what the index database, CLI and MCP use."));
+    var list = entities.filter(function (e) { return e.class === "Endpoint" && (e.attributes.common || r.exclude.indexOf(e.label) >= 0); })
+      .sort(function (a, b) { return (b.attributes.pages || 0) - (a.attributes.pages || 0) || a.label.localeCompare(b.label); });
+    if (!list.length) { body.appendChild(el("p", "muted small", "No API is common with this rule.")); return; }
+    var ul = el("ul", "common-list");
+    list.forEach(function (e) {
+      var li = el("li"), k = splitKey(e.label);
+      li.appendChild(methodBadge(k.method)); li.appendChild(el("span", "path", k.path));
+      li.appendChild(el("span", "badge", e.attributes.pages + " pages"));
+      var why = r.include.indexOf(e.label) >= 0 ? "always (yours)" : r.exclude.indexOf(e.label) >= 0 ? "never (yours)" :
+        DEF.include.indexOf(e.label) >= 0 ? "always (project)" : DEF.exclude.indexOf(e.label) >= 0 ? "never (project)" : "";
+      if (why) li.appendChild(el("span", "badge", why));
+      var b = el("button", "link-btn", e.attributes.common ? "Not common" : "Undo");
+      b.onclick = function () { setCommonOverride(e.label, e.attributes.common ? false : null); };
+      li.appendChild(b);
+      ul.appendChild(li);
+    });
+    body.appendChild(ul);
+  }
 
   // ---- stats
   var statsEl = document.getElementById("stats");
@@ -815,11 +947,15 @@ const SCRIPT = `
 
   // ---- page list
   var pageFilter = document.getElementById("page-filter");
-  var pageRows = O.pages.map(function (p) {
-    var brokenN = p.apis.filter(function (a) { return a.status === "not-found" || a.status === "method-mismatch"; }).length;
-    var own = p.apis.filter(function (a) { return !a.common; }).length;
-    return { p: p, broken: brokenN, own: own, text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
-  });
+  var pageRows = [];
+  function buildPageRows() {
+    pageRows = O.pages.map(function (p) {
+      var brokenN = p.apis.filter(function (a) { return a.status === "not-found" || a.status === "method-mismatch"; }).length;
+      var own = p.apis.filter(function (a) { return !a.common; }).length;
+      return { p: p, broken: brokenN, own: own, text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
+    });
+  }
+  buildPageRows();
   pageFilter.addEventListener("input", renderPageList);
   function renderPageList() {
     var q = pageFilter.value.trim().toLowerCase(), list = document.getElementById("page-list");
@@ -948,8 +1084,9 @@ const SCRIPT = `
         section("Common APIs (" + shared.length + ")", shared.map(function (a) { return { id: a.endpoint }; }));
       }
     }
-    if (n.class === "Endpoint" && n.attributes.common) {
-      box.appendChild(el("p", "muted", "Common API: " + n.attributes.pages + " pages use it, so it is hidden from other views by default."));
+    if (n.class === "Endpoint") {
+      if (n.attributes.common) box.appendChild(el("p", "muted", "Common API: " + n.attributes.pages + " pages use it, so it is hidden from other views."));
+      box.appendChild(commonToggle(n));
     }
     if (n.class === "Endpoint") {
       var using = [];
@@ -985,15 +1122,22 @@ const SCRIPT = `
   var usesByApi = new Map();
   O.pages.forEach(function (p) { p.apis.forEach(function (a) { push(usesByApi, a.endpoint, { page: p, use: a }); }); });
   function isBrokenUse(a) { return a.status === "not-found" || a.status === "method-mismatch"; }
-  var pageItems = O.pages.map(function (p) {
-    var bad = p.apis.filter(isBrokenUse).length, own = p.apis.filter(function (a) { return !a.common; }).length;
-    return { id: p.page, p: p, bad: bad, own: own, group: pageGroup(p.route), text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
-  });
-  var apiItems = Array.from(endpointsById.values()).map(function (e) {
-    var uses = usesByApi.get(e.id) || [];
-    return { id: e.id, e: e, uses: uses, bad: broken(e) ? 1 : 0, common: !!e.attributes.common, group: e.attributes.common ? "common APIs" : apiGroup(e),
-      text: (e.label + " " + (e.detail || "")).toLowerCase() };
-  });
+  var pageItems = [], apiItems = [], usedApiCount = 0, brokenApis = 0, pagesWithBroken = 0;
+  function buildPaItems() {
+    pageItems = O.pages.map(function (p) {
+      var bad = p.apis.filter(isBrokenUse).length, own = p.apis.filter(function (a) { return !a.common; }).length;
+      return { id: p.page, p: p, bad: bad, own: own, group: pageGroup(p.route), text: ((p.route || "") + " " + p.component + " " + p.file).toLowerCase() };
+    });
+    apiItems = Array.from(endpointsById.values()).map(function (e) {
+      var uses = usesByApi.get(e.id) || [];
+      return { id: e.id, e: e, uses: uses, bad: broken(e) ? 1 : 0, common: !!e.attributes.common, group: e.attributes.common ? "common APIs" : apiGroup(e),
+        text: (e.label + " " + (e.detail || "")).toLowerCase() };
+    });
+    usedApiCount = apiItems.filter(function (a) { return a.uses.length && !a.common; }).length;
+    brokenApis = apiItems.filter(function (a) { return a.bad && a.uses.length; }).length;
+    pagesWithBroken = pageItems.filter(function (p) { return p.bad; }).length;
+  }
+  buildPaItems();
   /** "/vsphere/datacenter/:id" → "/vsphere". */
   function pageGroup(route) {
     if (route === null || route === undefined) return "(no path)";
@@ -1011,9 +1155,6 @@ const SCRIPT = `
   function splitKey(label) { var i = label.indexOf(" "); return i > 0 ? { method: label.slice(0, i), path: label.slice(i + 1) } : { method: "ANY", path: label }; }
   function methodBadge(method) { return el("span", "method " + (/^(GET|POST|PUT|PATCH|DELETE)$/.test(method) ? method : "ANY"), method); }
 
-  var usedApiCount = apiItems.filter(function (a) { return a.uses.length && !a.common; }).length;
-  var brokenApis = apiItems.filter(function (a) { return a.bad && a.uses.length; }).length;
-  var pagesWithBroken = pageItems.filter(function (p) { return p.bad; }).length;
   var small = O.pages.length <= 40 && usedApiCount <= 80;
   document.getElementById("mode-matrix").hidden = !small || !O.pages.length;
 
@@ -1169,7 +1310,8 @@ const SCRIPT = `
       c.appendChild(el("span", "pill" + (api.bad ? " broken" : api.e.status === "unused" ? " unused" : ""), api.e.status || ""));
       c.appendChild(el("span", "badge", api.uses.length + " pages"));
       if (api.common) c.appendChild(el("span", "badge", "common API"));
-      title.appendChild(c); head.appendChild(title); head.appendChild(graphButton(api.e.id)); box.appendChild(head);
+      title.appendChild(c); head.appendChild(title);
+      var acts = graphButton(api.e.id); acts.appendChild(commonToggle(api.e)); head.appendChild(acts); box.appendChild(head);
       if (!api.uses.length) box.appendChild(el("p", "muted", "No page uses this API."));
       else {
         box.appendChild(el("h4", null, "Used by pages (" + api.uses.length + ")"));
@@ -1313,6 +1455,7 @@ const SCRIPT = `
   }
 
   rebuild();
+  renderCommonPanel();
   renderDetails();
   renderPa();
   renderTriples();

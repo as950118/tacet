@@ -83,6 +83,15 @@ describe.skipIf(!hasJar)("with the backend contract", () => {
     expect(() => ws.relations({ page: "/nope" })).toThrow('No Page "/nope"');
   });
 
+  it("rebuilds the stored relations when the common-API rule in the config changes", () => {
+    const config = join(dir, "common.config.json");
+    const base = JSON.parse(readFileSync(join(fixtures, "tacet.config.json"), "utf8"));
+    writeFileSync(config, JSON.stringify({ ...base, commonApis: { include: ["GET /users/{id}"] } }));
+    const custom = new TacetWorkspace(ws.indexPath, config).relations({ api: "GET /users/{id}" });
+    expect(custom.pageApis.every((u) => u.common)).toBe(true);
+    expect(ws.relations({ api: "GET /users/{id}" }).pageApis.some((u) => u.common)).toBe(false);
+  });
+
   it("finds every planted contract violation and nothing else", () => {
     const report = ws.check();
     expect(report.result).toBe("FAIL");

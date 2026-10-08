@@ -362,6 +362,7 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
   },
   "envFiles": ["apps/admin-web/.env"],
   "env": { "VITE_API_PREFIX": "/api/admin" },
+  "commonApis": { "share": 0.25, "minPages": 8, "include": [], "exclude": [] },
   "routes": { "/users/:id": "src/pages/User.tsx#UserPage" }
 }
 ```
@@ -369,6 +370,10 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
 - `apiClientMap`: endpoint를 자동 추론할 수 없는 API client(예: 제네릭 `request({ method, url })` 헬퍼)의 명시적 매핑.
 - `linking`: frontend HTTP client의 baseURL, backend context-path 등 prefix 차이. `pathRewrites`는 proxy/API gateway가
   backend로 넘기기 전에 바꾸는 prefix(긴 prefix 우선).
+- `commonApis`: "공통 API"(대부분의 페이지가 쓰는 권한 조회, 아이콘 fetch 등) 기준. 전체 페이지의 `share`(기본 0.25) 이상이면서
+  `minPages`(기본 8) 이상 페이지가 쓰는 API가 공통이고, `include`/`exclude`(예: `"GET /admin/v1/auth"`)로 강제할 수 있다.
+  index DB·CLI·MCP가 이 기준을 쓴다. HTML 탐색기 상단의 "Common APIs" 패널에서는 비율·최소 페이지 수·API별 공통 여부를
+  개인 설정으로 바꿀 수 있고, 이 설정은 그 브라우저에만 저장된다(localStorage, 프로젝트별).
 - `envFiles` / `env`: axios `baseURL`에 쓰이는 build-time 환경변수(`import.meta.env.X`, `process.env.X`). `envFiles`는
   frontend root 기준 dotenv 파일이고 `env`가 우선한다. 같은 코드를 여러 앱(예: admin/user)으로 빌드하면 앱별 config로
   각각 검사한다.

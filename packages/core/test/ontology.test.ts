@@ -59,6 +59,26 @@ const facts = (o: Ontology, predicate?: string) =>
   o.triples.filter((tr) => !predicate || tr.predicate === predicate).map((tr) => `${label(o, tr.subject)} ${tr.predicate} ${label(o, tr.object)}`);
 
 describe("buildOntology", () => {
+  it("takes the common-API rule from tacet.config.json", () => {
+    const names = Array.from({ length: 10 }, (_, i) => `P${i}`);
+    const fns = names.map((n) => func(n, `src/pages/${n}.tsx`, {}, n));
+    const calls = names.flatMap((n, i) => [
+      call(`auth-${n}`, "GET", "/auth", { callerFunctionId: n, file: `src/pages/${n}.tsx` }),
+      call(`item-${n}`, "GET", i < 3 ? "/items" : `/other/${i}`, { callerFunctionId: n, file: `src/pages/${n}.tsx` }),
+    ]);
+    const manifest = { ...frontend(calls, [], fns), routes: names.map((n) => route(`r-${n}`, `/${n}`, n, n)) };
+    const common = (config: object) => {
+      const o = buildOntology(new ProjectModel(manifest, null, { commonApis: config }));
+      return { rule: o.commonApis, apis: o.entities.filter((e) => e.attributes.common).map((e) => e.label).sort() };
+    };
+    expect(common({ share: 0.3, minPages: 2 })).toEqual({
+      rule: { share: 0.3, minPages: 2, include: [], exclude: [], threshold: 3 },
+      apis: ["GET /auth", "GET /items"],
+    });
+    expect(common({ include: ["GET /other/5"], exclude: ["GET /auth"] }).apis).toEqual(["GET /other/5"]);
+    expect(() => common({ share: 2 })).toThrow("commonApis.share");
+  });
+
   it("marks APIs most pages use as common and relates pages by the other APIs they share", () => {
     const names = Array.from({ length: 10 }, (_, i) => `P${i}`);
     const fns = names.map((n) => func(n, `src/pages/${n}.tsx`, {}, n));

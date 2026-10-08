@@ -1,4 +1,5 @@
 import type { ApiCallInfo, EndpointInfo, FunctionInfo, RouteInfo, TypeRef } from "../ir/types.js";
+import type { CommonApisConfig } from "../config.js";
 import { formatAccessPath } from "../path.js";
 import type { ApiUsage } from "./impact.js";
 import type { ProjectModel } from "./model.js";
@@ -120,6 +121,19 @@ export interface Ontology {
   /** Page → API matrix (the usesApi triples, with the fields each page reads). */
   pages: PageApis[];
   stats: { entities: Partial<Record<OntologyClass, number>>; triples: number; inferred: number };
+  /** The common-API rule the ontology was built with (project defaults from tacet.config.json). */
+  commonApis?: CommonApiRule;
+  /** Frontend root; identifies the project (e.g. for settings a viewer keeps in the browser). */
+  rootDir?: string;
+}
+
+export interface CommonApiRule {
+  share: number;
+  minPages: number;
+  include: string[];
+  exclude: string[];
+  /** Pages an API needs to be common: max(minPages, ceil(share × pages)). */
+  threshold: number;
 }
 
 export interface OntologyOptions {
@@ -457,7 +471,7 @@ export function buildOntology(model: ProjectModel, options: OntologyOptions = {}
 
   const { pages, uses } = inferPageApis(entities, kept, readsByEntity);
   kept.push(...uses);
-  markCommonApis(entities, pages);
+  const commonApis = markCommonApis(entities, pages, model.config.commonApis);
   relatePages(pages);
 
   const sorted = [...entities.values()].sort(
@@ -465,7 +479,7 @@ export function buildOntology(model: ProjectModel, options: OntologyOptions = {}
   );
   const stats: Ontology["stats"] = { entities: {}, triples: kept.length, inferred: kept.filter((t) => t.inferred).length };
   for (const e of sorted) stats.entities[e.class] = (stats.entities[e.class] ?? 0) + 1;
-  return { schema: ONTOLOGY_SCHEMA, entities: sorted, triples: kept, pages, stats };
+  return { schema: ONTOLOGY_SCHEMA, entities: sorted, triples: kept, pages, stats, commonApis, rootDir: model.frontend.rootDir };
 }
 
 const CLASS_ORDER: OntologyClass[] = [
@@ -577,25 +591,47 @@ function inferPageApis(
   return { pages, uses };
 }
 
-/** An API used by at least this share of all pages (and by at least COMMON_API_MIN_PAGES) is a common API. */
+/** Defaults: an API used by at least this share of all pages (and by at least COMMON_API_MIN_PAGES) is common. */
 export const COMMON_API_SHARE = 0.25;
 export const COMMON_API_MIN_PAGES = 8;
+
+/** The effective rule for a project: tacet.config.json `commonApis` over the defaults. */
+export function commonApiRule(config: CommonApisConfig = {}, pageCount: number): CommonApiRule {
+  const share = config.share ?? COMMON_API_SHARE;
+  const minPages = config.minPages ?? COMMON_API_MIN_PAGES;
+  if (!(share > 0 && share <= 1)) throw new Error(`commonApis.share must be in (0, 1], got ${share}`);
+  if (!(Number.isInteger(minPages) && minPages >= 1)) throw new Error(`commonApis.minPages must be a positive integer, got ${minPages}`);
+  return {
+    share,
+    minPages,
+    include: config.include ?? [],
+    exclude: config.exclude ?? [],
+    threshold: Math.max(minPages, Math.ceil(pageCount * share)),
+  };
+}
 
 /**
  * Marks APIs nearly every page uses (a permission check in the layout, an icon fetch). They connect every page to
  * every other, so views leave them out by default. Endpoint entities get `pages` (how many pages use them) and `common`.
  */
-function markCommonApis(entities: Map<string, OntologyEntity>, pages: PageApis[]): void {
+function markCommonApis(entities: Map<string, OntologyEntity>, pages: PageApis[], config?: CommonApisConfig): CommonApiRule {
+  const rule = commonApiRule(config, pages.length);
   const counts = new Map<string, number>();
   for (const page of pages) for (const api of page.apis) counts.set(api.endpoint, (counts.get(api.endpoint) ?? 0) + 1);
-  const threshold = Math.max(COMMON_API_MIN_PAGES, Math.ceil(pages.length * COMMON_API_SHARE));
-  const common = new Set([...counts].filter(([, n]) => n >= threshold).map(([id]) => id));
+  const include = new Set(rule.include), exclude = new Set(rule.exclude);
+  const common = new Set(
+    [...entities.values()]
+      .filter((e) => e.class === "Endpoint")
+      .filter((e) => !exclude.has(e.label) && (include.has(e.label) || (counts.get(e.id) ?? 0) >= rule.threshold))
+      .map((e) => e.id),
+  );
   for (const e of entities.values()) {
     if (e.class !== "Endpoint") continue;
     e.attributes.pages = counts.get(e.id) ?? 0;
     e.attributes.common = common.has(e.id);
   }
   for (const page of pages) for (const api of page.apis) if (common.has(api.endpoint)) api.common = true;
+  return rule;
 }
 
 /** For each page, the pages sharing the most non-common APIs with it. */
@@ -674,7 +710,7 @@ export function focusOntology(ontology: Ontology, query: string, depth = 2): Ont
     .map((p) => (keep.has(p.page) ? p : { ...p, apis: p.apis.filter((a) => keep.has(a.endpoint)) }));
   const stats: Ontology["stats"] = { entities: {}, triples: triples.length, inferred: triples.filter((t) => t.inferred).length };
   for (const e of entities) stats.entities[e.class] = (stats.entities[e.class] ?? 0) + 1;
-  return { schema: ontology.schema, entities, triples, pages, stats };
+  return { schema: ontology.schema, entities, triples, pages, stats, commonApis: ontology.commonApis, rootDir: ontology.rootDir };
 }
 
 export interface ApiPages {

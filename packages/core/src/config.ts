@@ -18,6 +18,21 @@ export interface LinkingConfig {
   pathRewrites?: Record<string, string>;
 }
 
+/**
+ * Which APIs count as "common" (used by so many pages that they link every page to every other, like a
+ * permission check in the layout). Common APIs are left out of related pages and hidden in views by default.
+ */
+export interface CommonApisConfig {
+  /** Share of all pages that must use an API, 0–1 (default 0.25). */
+  share?: number;
+  /** Minimum number of pages, whatever the share (default 8). */
+  minPages?: number;
+  /** APIs that are always common, e.g. "GET /admin/v1/governance/roles/menu/page/authority". */
+  include?: string[];
+  /** APIs that are never common. */
+  exclude?: string[];
+}
+
 export interface TacetConfig {
   /** Explicit mapping from API client calls (e.g. "userApi.getUser") to backend endpoints. */
   apiClientMap?: Record<string, ApiClientMapping>;
@@ -34,6 +49,7 @@ export interface TacetConfig {
    */
   env?: Record<string, string>;
   envFiles?: string[];
+  commonApis?: CommonApisConfig;
 }
 
 export function loadConfig(configPath: string | undefined): TacetConfig {

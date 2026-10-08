@@ -226,11 +226,14 @@ page_apis(page, endpoint, api_key, status, via, fields, common)   -- usesApi: �
 related_pages(page, related, shared, apis)                        -- 공통 API를 뺀 API를 함께 쓰는 페이지 (페이지당 상위 8개)
 ```
 
-**공통 API**: 전체 페이지의 25% 이상(최소 8개)이 쓰는 API(레이아웃의 권한 조회, 아이콘 fetch 등)는 Endpoint의
+**공통 API**: 전체 페이지의 25% 이상(최소 8개, `tacet.config.json`의 `commonApis`로 변경)이 쓰는 API(레이아웃의 권한 조회, 아이콘 fetch 등)는 Endpoint의
 `attributes.common`과 `page_apis.common`으로 표시된다. 이런 API는 모든 페이지를 서로 잇기 때문에(CMP400: API를 공유하는
 페이지 쌍 131,903 → 공통 API 제외 시 1,633) 관련 페이지 계산과 HTML의 기본 보기에서 빠진다.
 페이지 ↔ API는 양방향으로 번갈아 펼치면 끝이 없으므로, 그래프는 한 방향(페이지면 아래, API면 위)만 펼치고 "관련 페이지"는
 선이 아닌 순위 목록으로 보여준다. 서로 렌더/호출하는 컴포넌트·함수(강연결요소)는 그래프에서 노드 하나로 합쳐 그린다.
+기준은 index될 때마다 저장된 사실로 다시 계산되고(`index_meta.relations.commonApis`), 다른 config로 조회하면 관계 테이블을
+다시 만든다. HTML 탐색기는 같은 계산을 브라우저에서 다시 할 수 있어서, 보는 사람별 설정(localStorage)을 적용해도 index DB는
+바뀌지 않는다: 프로젝트 기준은 팀·CI가 공유하는 config에, 개인화는 각자의 브라우저에 둔다.
 
 관계 테이블은 ontology(`buildOntology`, 모든 frontend 함수 포함)를 그대로 저장한 것이다. `tacet relations`, MCP `relations`,
 Python `relations()`가 이 테이블을 읽고, SQL로 직접 조회할 수도 있다.
