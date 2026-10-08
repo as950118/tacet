@@ -227,6 +227,19 @@ class BackendExtractorTest {
         }
 
         @Test
+        void sameHandlerMappedToEquivalentPathsIsNotADuplicate() throws IOException {
+            BackendManifest result = extract(Map.of("src/A.java", """
+                    @RestController
+                    @RequestMapping("/items")
+                    public class A {
+                        @GetMapping({"", "/"}) public String list() { return ""; }
+                    }
+                    """));
+            assertEquals(List.of("GET /items"), result.endpoints().stream().map(EndpointInfo::id).toList());
+            assertEquals(List.of(), result.warnings());
+        }
+
+        @Test
         void requestMappingWithoutMethodMatchesEveryMethod() throws IOException {
             BackendManifest result = extract(Map.of("src/A.java", """
                     @RestController
@@ -256,6 +269,29 @@ class BackendExtractorTest {
                             new DtoFieldInfo("name", TypeRef.scalar("String"), true),
                             new DtoFieldInfo("children", TypeRef.array(TypeRef.dto("A.Node", List.of())), true)),
                     result.dtos().get(0).fields());
+        }
+
+        @Test
+        void classWithJsonValueSerializesAsThatValue() throws IOException {
+            BackendManifest result = extract(Map.of("src/A.java", """
+                    import java.util.List;
+                    @RestController
+                    public class A {
+                        @GetMapping("/items") public Envelope<ResourceData<Item>> items() { return null; }
+                        public static class Envelope<T> { private T data; }
+                        public static class ResourceData<T> {
+                            private List<T> data;
+                            @JsonValue public List<T> getData() { return data; }
+                        }
+                        public static class Code { @JsonValue private String value; }
+                        public static class Item { private String sku; private Code code; }
+                    }
+                    """));
+            EndpointInfo items = result.endpoints().get(0);
+            assertEquals(TypeRef.dto("A.Envelope", List.of(TypeRef.array(TypeRef.dto("A.Item", List.of())))), items.response());
+            DtoInfo item = result.dtos().stream().filter(d -> d.id().equals("A.Item")).findFirst().orElseThrow();
+            assertEquals(TypeRef.scalar("String"), item.fields().get(1).type());
+            assertTrue(result.dtos().stream().noneMatch(d -> d.id().equals("A.ResourceData")));
         }
 
         @Test

@@ -66,6 +66,15 @@ describe("EndpointLinker", () => {
     expect(withBase.link(call("c", "GET", "/users")).status).toBe("matched");
     expect(withBase.link(call("c", "GET", "/api/users")).status).toBe("matched");
   });
+
+  it("applies proxy/gateway path rewrites, longest prefix first", () => {
+    const gateway = new EndpointLinker([endpoint("GET", "/admin/v1/users", null), endpoint("GET", "/v1/login", null)], {
+      pathRewrites: { "/api": "", "/api/console": "" },
+    });
+    expect(gateway.link(call("c", "GET", "/api/console/admin/v1/users")).endpointId).toBe("GET /admin/v1/users");
+    expect(gateway.link(call("c", "GET", "/api/v1/login")).endpointId).toBe("GET /v1/login");
+    expect(gateway.link(call("c", "GET", "/apiv1/login")).status).toBe("not-found");
+  });
 });
 
 describe("checkPath", () => {
@@ -197,6 +206,25 @@ describe("checkContract", () => {
       "info UNRESOLVED_ENDPOINT src/Orders.tsx",
     ]);
     expect(report.counts).toEqual({ error: 3, warning: 4, info: 1 });
+  });
+
+  it("does not fail an alternative of a fallback chain when another alternative exists", () => {
+    const base = sampleModel();
+    const fe = {
+      ...base.frontend,
+      propertyAccesses: [
+        access("a:ok", "c:page", ["name"], { file: "src/Fallback.tsx", fallbackGroup: "g1" }),
+        access("a:alt", "c:page", ["full_name"], { file: "src/Fallback.tsx", fallbackGroup: "g1" }),
+        access("a:none1", "c:page", ["nick"], { file: "src/Fallback.tsx", fallbackGroup: "g2" }),
+        access("a:none2", "c:page", ["nick_name"], { file: "src/Fallback.tsx", fallbackGroup: "g2" }),
+      ],
+    };
+    const report = checkContract(new ProjectModel(fe, base.backend!), { files: ["src/Fallback.tsx"] });
+    expect(report.issues.map((i) => `${i.accessId} ${i.severity} ${i.code}`)).toEqual([
+      "a:none1 error FIELD_NOT_FOUND",
+      "a:none2 error FIELD_NOT_FOUND",
+      "a:alt info FALLBACK_FIELD_NOT_FOUND",
+    ]);
   });
 
   it("suggests the closest field name", () => {

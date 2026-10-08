@@ -15,6 +15,7 @@ tacet check                                     # frontend usage vs the real con
 tacet diff --base origin/main --backend ./backend   # what a backend change breaks
 tacet impact --api "GET /users/{id}"            # what depends on this API (also --file, --field)
 tacet graph -o graph.html                       # interactive API -> component -> file graph
+tacet ontology -f text                          # which page uses which API (html / json / turtle / mermaid)
 tacet ci --frontend ./frontend --backend ./backend --base origin/main   # everything, for CI
 tacet verify --backend ./backend --base origin/main   # + AI review of undecided findings (ANTHROPIC_API_KEY)
 ```

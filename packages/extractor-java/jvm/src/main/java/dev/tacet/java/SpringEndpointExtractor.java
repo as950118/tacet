@@ -84,7 +84,8 @@ final class SpringEndpointExtractor {
                 for (MethodDeclaration method : type.getMethods()) {
                     extractMethod(type, method, prefixes, bodyByDefault).forEach(endpoint -> {
                         EndpointInfo previous = endpoints.putIfAbsent(endpoint.id(), endpoint);
-                        if (previous != null) {
+                        // @GetMapping({"", "/"}) maps one handler to the same normalized path twice.
+                        if (previous != null && !previous.handler().equals(endpoint.handler())) {
                             warnings.add("Duplicate endpoint " + endpoint.id() + " in " + previous.handler()
                                     + " and " + endpoint.handler());
                         }

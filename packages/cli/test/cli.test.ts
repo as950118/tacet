@@ -73,6 +73,25 @@ describe.skipIf(!hasJar)("with the backend contract", () => {
     await ws.extractBackend(join(fixtures, "backend"));
   });
 
+  it("keeps the relations in the index and answers page / API / relation queries from it", () => {
+    const byPage = ws.relations({ page: "UserPage" });
+    expect(byPage.pageApis.map((u) => u.apiKey)).toContain("GET /users/{id}");
+    const byApi = ws.relations({ api: "GET /users/{id}" });
+    expect(byApi.pageApis.map((u) => byApi.entities[u.page].label)).toContain("UserPage (page)");
+    const renders = ws.relations({ subject: "UserPage", predicate: "renders" });
+    expect(renders.relations.map((t) => renders.entities[t.object].label)).toContain("UserCard");
+    expect(() => ws.relations({ page: "/nope" })).toThrow('No Page "/nope"');
+  });
+
+  it("rebuilds the stored relations when the common-API rule in the config changes", () => {
+    const config = join(dir, "common.config.json");
+    const base = JSON.parse(readFileSync(join(fixtures, "tacet.config.json"), "utf8"));
+    writeFileSync(config, JSON.stringify({ ...base, commonApis: { include: ["GET /users/{id}"] } }));
+    const custom = new TacetWorkspace(ws.indexPath, config).relations({ api: "GET /users/{id}" });
+    expect(custom.pageApis.every((u) => u.common)).toBe(true);
+    expect(ws.relations({ api: "GET /users/{id}" }).pageApis.some((u) => u.common)).toBe(false);
+  });
+
   it("finds every planted contract violation and nothing else", () => {
     const report = ws.check();
     expect(report.result).toBe("FAIL");
@@ -190,6 +209,18 @@ describe.skipIf(!hasJar || !existsSync(bin))("tacet CLI", () => {
     const html = join(dir, "graph.html");
     expect(run("graph", "-o", html).status).toBe(0);
     expect(readFileSync(html, "utf8")).toContain("<title>Tacet impact graph</title>");
+  });
+
+  it("renders the ontology: page → API text, JSON, Turtle and the HTML explorer", () => {
+    const text = run("ontology", "-f", "text").stdout;
+    expect(text).toContain("Pages → APIs (2):");
+    expect(text).toMatch(/✓ GET \/users\/\{id\}\s+UserPage/);
+    const ontology = JSON.parse(run("ontology", "-f", "json", "--focus", "UserCard").stdout);
+    expect(ontology.entities.map((e: { label: string }) => e.label)).toEqual(expect.arrayContaining(["UserCard", "UserResponse.name"]));
+    expect(run("ontology", "-f", "turtle").stdout).toContain("tacet:usesApi a owl:ObjectProperty");
+    const html = join(dir, "ontology.html");
+    expect(run("ontology", "-o", html).status).toBe(0);
+    expect(readFileSync(html, "utf8")).toContain("<title>Tacet ontology</title>");
   });
 
   it("reports frontend impact of backend changes and fails on definite impact", () => {

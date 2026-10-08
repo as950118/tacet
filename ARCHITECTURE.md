@@ -90,12 +90,15 @@ Frontend (Phase 1 구현):
 | 타입 | 주요 필드 |
 |---|---|
 | `FileInfo` | path, imports(**resolvedFile**: tsconfig paths까지 해석된 프로젝트 파일), exports |
-| `FunctionInfo` | id, name, params, returnType, calls, containingComponent |
+| `FunctionInfo` | id, name, params, returnType, calls, containingComponent, **parentId**, **invokes**, **renders** |
+| `RouteInfo` | path(없으면 null), componentId, component, **source**, file, location |
 | `ApiCallInfo` | endpointPattern, method, calleeExpression, **resolution**, **wrapperFunctionId**, callerFunctionId, location, arguments, **request**(queryKeys, bodyKeys), returnVarType, code |
 | `PropertyAccessInfo` | apiCallId, object, **path (response body 기준)**, **flow**, location, containingFunctionId, containingComponent, code |
 
 - `resolution`: `direct`(axios/fetch 직접 호출) · `wrapper`(API 호출 결과를 반환하는 함수 호출, 예: `getUser(id)`) · `config`(apiClientMap)
 - `wrapperFunctionId`: wrapper 호출이 거치는 API client 함수. graph에서 `API → getUser → UserPage` 사슬과 "이 파일의 client 함수를 누가 쓰나"에 사용.
+- `invokes` / `renders`: import를 따라 해석된 프로젝트 함수 호출과 JSX로 렌더하는 컴포넌트의 function id. `parentId`는 감싸는 함수(콜백 → 컴포넌트). ontology의 `calls`/`renders` 관계가 된다.
+- `RouteInfo.source`: `vue-router`(`{ path, component }` 객체의 component가 `.vue`: `() => import("./X.vue")` 또는 import한 컴포넌트. 변수에 담긴 route 배열이 `children: [...routes]`로 spread되면 다른 파일이어도 부모 경로 아래로 합친다) · `react-router`(`<Route path element>` JSX, `{ path, element | Component | lazy, children }` 객체, `React.lazy`) · `file-system`(Next.js `pages/`·`app/**/page.tsx`, Remix/React Router `app/routes/`, `package.json` 의존성으로 판단) · `config`(`tacet.config.json`의 `routes`) · `convention`(router가 하나도 없을 때 `pages/`·`views/`·`screens/` 디렉터리의 export된 컴포넌트, path = null). element 안에 감싼 컴포넌트가 있으면 가장 안쪽 프로젝트 컴포넌트를 페이지로 본다(`<RequireAuth><Dashboard/></RequireAuth>` → Dashboard).
 - `request`: 정적으로 알 수 있는 query key(URL의 `?a=`, axios `params`)와 body key(object literal). 알 수 없으면 `null` — 추측하지 않는다.
 - `path`: **응답 body 기준 경로**. `res.data.user.name`(axios)이나 `(await res.json()).user.name`(fetch) 모두 `["user","name"]`로 저장된다. 배열 원소는 `"[]"`. 따라서 Phase 5에서 DTO 필드와 바로 비교할 수 있다.
 - `flow`: `direct`(응답 body임이 증명됨) · `derived`(추적 불가한 함수를 거침, 예: `transform(user).name`) → Phase 5에서 DEFINITE/POSSIBLE 판정의 근거가 된다.
@@ -105,6 +108,9 @@ Backend: `EndpointInfo`, `DtoInfo`, `DtoFieldInfo`, `EnumInfo`, `ParamInfo`, 재
 ## 4. TypeScript AST 분석 방법 (구현됨)
 
 ts-morph로 프로젝트를 로드한다(`tsconfig.json`이 있으면 그대로 사용, 없으면 `**/*.ts(x)`).
+root `tsconfig.json`이 없는 monorepo(Nx, pnpm workspace)에서는 import마다 가장 가까운 `tsconfig.json`/`tsconfig.base.json`의
+`paths`/`baseUrl`로 해석하고, 그래도 안 되면 workspace 패키지(`package.json`의 `name` → `types`/`main`/`src/index`)로 해석한다.
+`node_modules`가 설치되지 않은 CI에서도 `@shared-api` 같은 workspace import가 소스로 연결된다.
 분석은 두 패스로 이루어진다.
 
 **Pass 1 — 데이터 흐름 전파 (`DataFlowAnalyzer.propagate`)**
@@ -135,13 +141,30 @@ shadowing이나 다른 파일에서 import한 함수도 정확히 구분된다. 
 메서드 호출인 마지막 segment는 제외한다.
 
 **API Call 인식 (MVP)**
-- `axios.get/post/put/delete/patch`, `axios.create()`로 만든 인스턴스(다른 모듈에서 import해도 인식)
+- `axios.get/post/put/delete/patch`, `axios.create()`로 만든 인스턴스(다른 모듈에서 import해도 인식). 인스턴스를 만드는
+  factory 함수(`createApiInstance({ baseURL })`가 `axios.create`를 반환)도 따라간다.
+- 인스턴스의 `baseURL`을 정적으로 계산해 경로 앞에 붙인다: 리터럴, `const`, 템플릿, `import.meta.env.X`/`process.env.X`
+  (`tacet.config.json`의 `envFiles`/`env`). 계산할 수 없으면 붙이지 않는다.
 - `fetch(url, { method })` (기본 GET)
 - Wrapper 함수 (위 참조)
 - `tacet.config.json`의 `apiClientMap` (추론이 불가능한 client용 명시적 매핑, 추론보다 우선)
 
 URL은 정적으로 해석 가능한 경우만 패턴화한다: 문자열, 템플릿 리터럴(`` `/users/${id}` ``), 문자열 연결(`"/users/" + id`)은
-`/users/{param}`이 되고, 완전히 동적인 URL은 `null`로 둔다(추측하지 않음).
+`/users/{param}`이 되고, 완전히 동적인 URL은 `null`로 둔다(추측하지 않음). 문자열 `const`(`` `${BASE}/items` ``)는 값으로 치환한다.
+
+**Vue SFC** (`vue.ts`): 각 `.vue`는 함수 대신 `fn:<file>:component` id의 컴포넌트 하나로 표현되어 script setup·template의 호출과 읽기가 모두 여기에 속하고, template에서 쓰는 컴포넌트는 `renders`로 연결된다.  `.vue` 파일은 메모리 안의 `X.vue.ts`로 분석한다(`import "./X.vue"`가 그대로 해석된다). script 블록은
+원래 줄·열을 유지하고, 나머지 줄은 비운다. template은 `@vue/compiler-dom`으로 파싱해 각 표현식을 원래 줄에 TypeScript로 쓴다:
+`v-for` → `for (const u of ...) {`, `v-slot` → 블록 상수, `@click` → arrow 함수. script binding 참조는 `__tacetUnref(x)`
+(template의 ref 자동 unwrap), prop 참조는 `__tacetProps.x`, 자식 컴포넌트에 넘기는 값은 `__tacetRender(Comp, { prop: ... })`로
+바뀌고, analyzer가 이를 자식의 `defineProps()` 결과에 연결한다. 리포트의 경로와 코드는 `.vue` 기준으로 보인다.
+
+**함수 호출**: 프로젝트 함수의 반환값은 호출마다 인자를 parameter에 묶어 계산하고 원래 binding을 되돌린다(같은 helper를 여러 값으로
+부르거나 재귀 호출해도 섞이지 않는다). 따라갈 수 없는 함수를 거친 값은 인자의 경로를 유지한 `derived`가 된다.
+
+**값 wrapper**: React Query/SWR 결과(`.data`), Vue Query 결과(`.data`가 ref), Vue `ref`/`computed`/`toRef`(`.value`),
+`x.value = res.data` 대입을 추적한다. `a ?? b`/`a || b`는 왼쪽을, `a && b`는 오른쪽을 값으로 본다.
+`a.metaData ?? a.meta_data`처럼 `??`/`||` 체인의 피연산자인 읽기는 `fallbackGroup`으로 묶여, 체인 중 하나라도 응답에 있으면
+나머지는 `FALLBACK_FIELD_NOT_FOUND`(info)로 보고된다.
 
 ## 5. Java API 분석 방법 (Phase 2, 구현됨)
 
@@ -167,6 +190,7 @@ nested type / wildcard import / static import 규칙으로 프로젝트 타입�
 - `@JsonProperty` 이름, `@JsonIgnore`, `@JsonIgnoreProperties`, `@JsonNaming`(snake/kebab/...), `static`/`transient` 제외.
 - nullable: primitive → false, `@NotNull/@NonNull/@NotBlank/@NotEmpty` → false, `@Nullable`/`Optional` → true, 나머지 참조 타입 → true.
 - Enum 값(`@JsonProperty` 반영), Spring Data `Page<T>`/`Slice<T>`는 실제 JSON 모양(`content`, `totalElements`...)의 DTO로 모델링.
+- `@JsonValue` getter/field가 있는 클래스는 그 값의 타입으로 직렬화된다(`ResourceData<T> { @JsonValue List<T> getData() }` → 배열).
 - 알려진 한계: 전역 Jackson 설정(`spring.jackson.property-naming-strategy`), `@JsonUnwrapped`, `@JsonValue` enum(warning), Kotlin 소스.
 
 ## 6. API ↔ TypeScript 연결 방법 (Phase 3, 구현됨)
@@ -190,10 +214,29 @@ files(id, file, json)
 functions(id, file, name, json)
 api_calls(id, file, method, endpoint_pattern, json)
 property_accesses(id, file, api_call_id, json)
+routes(id, file, json)
 endpoints(id, file, method, path, json)
 dtos(id, file, name, json)
 enums(id, file, name, json)
+
+-- 관계 (위 사실에서 파생, frontend/backend가 index될 때마다 한 transaction으로 다시 씀)
+entities(id, class, label, file, line, status, json)              -- Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto, DtoField, Enum, File
+relations(subject, predicate, object, inferred, json)             -- PK(subject, predicate, object), json = evidence(file:line, code), via
+page_apis(page, endpoint, api_key, status, via, fields, common)   -- usesApi: 페이지 → API, 호출 경로와 읽는 필드
+related_pages(page, related, shared, apis)                        -- 공통 API를 뺀 API를 함께 쓰는 페이지 (페이지당 상위 8개)
 ```
+
+**공통 API**: 전체 페이지의 25% 이상(최소 8개, `tacet.config.json`의 `commonApis`로 변경)이 쓰는 API(레이아웃의 권한 조회, 아이콘 fetch 등)는 Endpoint의
+`attributes.common`과 `page_apis.common`으로 표시된다. 이런 API는 모든 페이지를 서로 잇기 때문에(CMP400: API를 공유하는
+페이지 쌍 131,903 → 공통 API 제외 시 1,633) 관련 페이지 계산과 HTML의 기본 보기에서 빠진다.
+페이지 ↔ API는 양방향으로 번갈아 펼치면 끝이 없으므로, 그래프는 한 방향(페이지면 아래, API면 위)만 펼치고 "관련 페이지"는
+선이 아닌 순위 목록으로 보여준다. 서로 렌더/호출하는 컴포넌트·함수(강연결요소)는 그래프에서 노드 하나로 합쳐 그린다.
+기준은 index될 때마다 저장된 사실로 다시 계산되고(`index_meta.relations.commonApis`), 다른 config로 조회하면 관계 테이블을
+다시 만든다. HTML 탐색기는 같은 계산을 브라우저에서 다시 할 수 있어서, 보는 사람별 설정(localStorage)을 적용해도 index DB는
+바뀌지 않는다: 프로젝트 기준은 팀·CI가 공유하는 config에, 개인화는 각자의 브라우저에 둔다.
+
+관계 테이블은 ontology(`buildOntology`, 모든 frontend 함수 포함)를 그대로 저장한 것이다. `tacet relations`, MCP `relations`,
+Python `relations()`가 이 테이블을 읽고, SQL로 직접 조회할 수도 있다.
 
 **Incremental 갱신**: `writeManifest`는 전체를 지우고 다시 쓰지 않는다. row JSON을 비교해 바뀐 row만
 upsert/delete하고, 영향받은 **파일 목록**을 돌려준다. ID는 위치 기반(`call:<file>:<line>:<col>`)이라 바뀌지 않은
@@ -290,6 +333,7 @@ frontend의 API 사용을 실제 backend 계약과 대조한다. 범위를 파�
 | `UNKNOWN_BODY_FIELD` / `MISSING_BODY_FIELD` | warning | request DTO에 없는 key / 필수(non-null) 필드 누락 |
 | `UNKNOWN_QUERY_PARAM` / `MISSING_QUERY_PARAM` | warning | 받지 않는 query param / 필수 param 누락 |
 | `UNRESOLVED_ENDPOINT`, `UNVERIFIABLE_FIELD` | info | 정적으로 확정 불가 (추측하지 않음) |
+| `FALLBACK_FIELD_NOT_FOUND` | info | `??`/`||` 체인의 대안 필드가 없지만 같은 체인의 다른 대안은 있음 |
 
 응답 path 검사는 제네릭을 치환하며(`ApiResponse<Page<User>>`의 `data.content[].name`), 배열 원소(`[]`), map 값,
 문자열/배열의 `length`를 이해한다. 결과: `PASS` / `WARNING` / `FAIL`, `--fail-on`으로 CI exit code 결정.
@@ -321,6 +365,30 @@ endpoint ──has-field──▶ field ──reads──▶ reading fn/componen
 각 노드에 영향 수(endpoint/field: 하위 파일 수, 함수/파일: 상위 API 수)를 계산한다. 출력:
 - `--format html`: 외부 요청 없는 단일 HTML. 계층 레이아웃, 검색, 종류 필터, 노드 클릭 시 상·하류 추적과 상세 패널, 검색 가능한 목록, 라이트/다크.
 - `--format mermaid`: PR 코멘트·문서용. `--format json`: 다른 도구용.
+
+**Ontology** (`core/src/analysis/ontology.ts`, `core/src/report/ontology.ts`) — `tacet ontology`
+
+graph가 "API 변경의 영향"을 보는 뷰라면, ontology는 프로젝트 전체를 **타입이 있는 엔티티와 관계(subject–predicate–object)**로
+표현한다. "어떤 페이지가 어떤 API와 연동되어 있나"가 주 질문이다.
+
+| Class | 출처 |
+|---|---|
+| Page | `RouteInfo` |
+| Component / Hook / ApiClient / Function | `FunctionInfo` (중첩 함수·콜백은 감싸는 module-level 함수로 합친다). HTTP 요청을 보내는 함수 = ApiClient |
+| Endpoint / Controller | backend `EndpointInfo`(handler의 class = Controller). backend에 없는 호출은 frontend 기준 key로 |
+| Dto / DtoField / Enum | backend DTO와 JSON 필드 |
+| File | 정의 위치 |
+
+```text
+Page ─showsComponent▶ Component ─renders▶ Component ─calls▶ ApiClient ─requests▶ Endpoint ─handledBy▶ Controller
+Component ─reads▶ DtoField ◀hasField─ Dto ◀returns/accepts─ Endpoint        DtoField ─typedAs▶ Dto | Enum
+Page ┄usesApi┄▶ Endpoint   (추론: showsComponent/renders/calls/requests를 따라 도달 + 방문한 코드가 읽는 응답 필드의 API)
+```
+
+- 관계마다 evidence(file:line, 코드)를 최대 5개 남긴다. `usesApi`는 `inferred: true`이고 `via`에 페이지→API 경로를 담는다.
+- 읽는 경로는 `checkPath`로 응답 타입을 따라가 **실제 DTO 필드**에 연결한다(`profile.email` → `Profile.email`). 해석되지 않으면 Endpoint에 연결.
+- 기본으로 API에 닿지 않는 frontend 함수는 제외한다(`--all`로 포함). `focusOntology(query, depth)`는 엔티티 주변만 잘라낸다.
+- 출력: `json`(entities, triples, pages, stats) · `html`(class 레인 그래프 + 술어 필터 + 클릭 추적, Page×API 매트릭스, triple 표, schema 다이어그램; 외부 요청 없음) · `mermaid` · `turtle`(OWL class/ObjectProperty의 domain·range + 개체; Jena·GraphDB 등에서 SPARQL) · `text`.
 
 ## 12. Library / MCP (구현됨)
 

@@ -7,7 +7,8 @@ import {
   type HttpMethod,
   type RequestShape,
 } from "@tacet-api/core";
-import { objectLiteralKeys, resolveEndpointExpression, resolveUrlQueryKeys } from "./endpoint.js";
+import { objectLiteralKeys, resolveEndpointExpression, resolveStaticString, resolveUrlQueryKeys } from "./endpoint.js";
+import { VUE_DEFINE_PROPS, VUE_RENDER, VUE_UNREF } from "./vue.js";
 
 /**
  * - body:      (a sub-part of) the response body, located at `path`
@@ -16,11 +17,25 @@ import { objectLiteralKeys, resolveEndpointExpression, resolveUrlQueryKeys } fro
  */
 export type ValueKind = "body" | "envelope" | "fetchResponse";
 
+/**
+ * Containers around a value, outermost first:
+ * - query:    a React Query / SWR result; `.data` is the value
+ * - vueQuery: a Vue Query result; `.data` is a ref to the value
+ * - ref:      a Vue ref / computed; `.value` is the value
+ */
+export type ValueWrapper = "query" | "vueQuery" | "ref";
+
 export interface TrackedValue {
   apiCallId: string;
   kind: ValueKind;
   path: string[];
   flow: DataFlowKind;
+  wrappers?: ValueWrapper[];
+}
+
+/** The response body (or a part of it) itself, not wrapped in a query result or ref. */
+export function isBody(value: TrackedValue | null | undefined): value is TrackedValue {
+  return value?.kind === "body" && !value.wrappers?.length;
 }
 
 export interface Endpoint {
@@ -30,12 +45,15 @@ export interface Endpoint {
 
 export interface ApiCallTarget {
   endpoint: Endpoint;
+  /** baseURL of the axios instance the request goes through, when known statically. */
+  baseUrl: string | null;
   request: RequestShape;
   /** The API client function a `wrapper` call goes through. */
   wrapper: FunctionLike | null;
   resolution: ApiCallResolution;
   resultKind: ValueKind;
   resultPath: string[];
+  resultWrappers?: ValueWrapper[];
   flow: DataFlowKind;
 }
 
@@ -54,8 +72,10 @@ export type FunctionLike =
 
 interface WrapperInfo {
   endpointFor(call: CallExpression): Endpoint;
+  baseUrl: string | null;
   resultKind: ValueKind;
   resultPath: string[];
+  resultWrappers?: ValueWrapper[];
   flow: DataFlowKind;
 }
 
@@ -69,6 +89,8 @@ const SAME_ARRAY_METHODS = new Set(["filter", "slice", "sort", "reverse", "toSor
 const ELEMENT_RESULT_METHODS = new Set(["find", "findLast", "at"]);
 const QUERY_HOOKS = new Set(["useQuery", "useSuspenseQuery", "useSWR", "useSWRImmutable"]);
 const STATE_HOOKS = new Set(["useState", "React.useState"]);
+const VUE_REF_FUNCTIONS = new Set(["ref", "shallowRef", "computed", "toRef", "readonly", "shallowReadonly"]);
+const VUE_UNREF_FUNCTIONS = new Set(["unref", "toValue"]);
 
 export function isFunctionLike(node: Node): node is FunctionLike {
   return (
@@ -103,6 +125,8 @@ export class DataFlowAnalyzer {
   constructor(
     private readonly config: TacetConfig,
     private readonly callIdOf: (call: CallExpression) => string,
+    /** Build-time env variables (`import.meta.env.X`) used to resolve axios baseURLs. */
+    private readonly envVars: Record<string, string> = {},
   ) {}
 
   /** Propagates tracked values through the given files. Run to a fixpoint so declaration order does not matter. */
@@ -134,10 +158,8 @@ export class DataFlowAnalyzer {
     }
     if (Node.isPropertyAccessExpression(e)) {
       const base = e.getExpression();
-      const propsSym = Node.isIdentifier(unwrap(base)) ? symbolOf(unwrap(base)) : undefined;
-      if (propsSym && this.propsEnv.has(propsSym)) {
-        return this.propsEnv.get(propsSym)!.get(e.getName()) ?? null;
-      }
+      const props = this.propsBagOf(unwrap(base));
+      if (props) return props.get(e.getName()) ?? null;
       return step(this.evaluate(base), e.getName());
     }
     if (Node.isElementAccessExpression(e)) {
@@ -154,12 +176,12 @@ export class DataFlowAnalyzer {
     }
     if (Node.isBinaryExpression(e)) {
       const op = e.getOperatorToken().getKind();
-      if (
-        op === SyntaxKind.QuestionQuestionToken ||
-        op === SyntaxKind.BarBarToken ||
-        op === SyntaxKind.AmpersandAmpersandToken
-      ) {
+      // `a && a.b` yields its right operand; `a ?? b` / `a || b` yield the left one unless it is missing.
+      if (op === SyntaxKind.AmpersandAmpersandToken) {
         return this.evaluate(e.getRight()) ?? this.evaluate(e.getLeft());
+      }
+      if (op === SyntaxKind.QuestionQuestionToken || op === SyntaxKind.BarBarToken) {
+        return this.evaluate(e.getLeft()) ?? this.evaluate(e.getRight());
       }
     }
     return null;
@@ -180,6 +202,17 @@ export class DataFlowAnalyzer {
       const value = this.evaluate(node.getRight());
       const sym = symbolOf(node.getLeft());
       if (value && sym) this.env.set(sym, value);
+    } else if (
+      Node.isBinaryExpression(node) &&
+      node.getOperatorToken().getKind() === SyntaxKind.EqualsToken &&
+      Node.isPropertyAccessExpression(node.getLeft())
+    ) {
+      // Vue: `items.value = res.data` makes `items` a ref to the response.
+      const left = node.getLeft() as import("ts-morph").PropertyAccessExpression;
+      const target = unwrap(left.getExpression());
+      const value = left.getName() === "value" && Node.isIdentifier(target) ? this.evaluate(node.getRight()) : null;
+      const sym = value ? symbolOf(target) : undefined;
+      if (value && sym) this.env.set(sym, wrap(value, "ref"));
     } else if (Node.isCallExpression(node)) {
       this.evaluate(node);
     } else if (Node.isJsxAttribute(node)) {
@@ -233,7 +266,7 @@ export class DataFlowAnalyzer {
         const key = element.getPropertyNameNode()?.getText() ?? element.getName();
         const child = step(value, key);
         if (!child) continue;
-        if (child.kind === "body" && child.path.length > 0) {
+        if (isBody(child) && child.path.length > 0) {
           this.destructuredAccesses.set(element, {
             node: element,
             object: objectText,
@@ -273,9 +306,40 @@ export class DataFlowAnalyzer {
     const component = resolveFunctionNode(opening.getTagNameNode());
     const propsParam = component?.getParameters()[0];
     if (!propsParam) return;
+    this.bindProp(propsParam.getNameNode(), attr.getNameNode().getText(), value, expr);
+  }
 
-    const propName = attr.getNameNode().getText();
-    const propsName = propsParam.getNameNode();
+  /** `__tacetRender(Comp, { user: ... })` from a Vue template: binds the values to Comp's `defineProps()`. */
+  private bindVueComponentProps(args: Node[]): void {
+    const [componentExpr, propsExpr] = args;
+    if (!componentExpr || !Node.isObjectLiteralExpression(propsExpr)) return;
+    const decl = targetSymbol(componentExpr)?.getDeclarations()[0];
+    const propsTarget = decl ? vuePropsDeclaration(decl.getSourceFile()) : undefined;
+    if (!propsTarget) return;
+    for (const prop of propsExpr.getProperties()) {
+      if (!Node.isPropertyAssignment(prop)) continue;
+      const init = prop.getInitializer();
+      const value = init ? this.evaluate(init) : null;
+      const nameNode = prop.getNameNode();
+      const name = Node.isStringLiteral(nameNode) ? nameNode.getLiteralValue() : nameNode.getText();
+      if (value && init) this.bindProp(propsTarget, name, value, init);
+    }
+  }
+
+  /** Props bound to a component's props object, also through a plain alias (`const p = props`). */
+  private propsBagOf(node: Node, depth = 0): Map<string, TrackedValue> | undefined {
+    if (!Node.isIdentifier(node) || depth > 5) return undefined;
+    const sym = symbolOf(node);
+    if (!sym) return undefined;
+    const bag = this.propsEnv.get(sym);
+    if (bag) return bag;
+    const decl = node.getSymbol()?.getDeclarations()[0];
+    const init = Node.isVariableDeclaration(decl) ? decl.getInitializer() : undefined;
+    return init ? this.propsBagOf(unwrap(init), depth + 1) : undefined;
+  }
+
+  /** Binds one prop value to a component's props: a destructuring pattern or a props object. */
+  private bindProp(propsName: Node, propName: string, value: TrackedValue, expr: Node): void {
     if (Node.isObjectBindingPattern(propsName)) {
       const element = propsName
         .getElements()
@@ -302,6 +366,7 @@ export class DataFlowAnalyzer {
         kind: target.resultKind,
         path: target.resultPath,
         flow: target.flow,
+        ...(target.resultWrappers?.length ? { wrappers: target.resultWrappers } : {}),
       };
     }
 
@@ -309,7 +374,26 @@ export class DataFlowAnalyzer {
     const args = call.getArguments();
     const calleeText = callee.getText();
 
-    if (QUERY_HOOKS.has(calleeText)) return this.evaluateQueryHook(args);
+    if (calleeText === VUE_UNREF) {
+      const value = args[0] ? this.evaluate(args[0]) : null;
+      return value ? unwrapRef(value) : null;
+    }
+    if (calleeText === VUE_RENDER) {
+      this.bindVueComponentProps(args);
+      return null;
+    }
+    if (QUERY_HOOKS.has(calleeText)) {
+      return this.evaluateQueryHook(args, /vue-query$/.test(importSource(callee) ?? "") ? "vueQuery" : "query");
+    }
+    if (Node.isIdentifier(callee) && isVueImport(callee)) {
+      const name = importedName(callee) ?? calleeText;
+      if (VUE_REF_FUNCTIONS.has(name) || VUE_UNREF_FUNCTIONS.has(name)) {
+        const arg = args[0];
+        const value = !arg ? null : isFunctionLike(arg) ? this.evaluateFunctionResult(arg) : this.evaluate(arg);
+        if (!value) return null;
+        return VUE_REF_FUNCTIONS.has(name) ? wrap(value, "ref") : unwrapRef(value);
+      }
+    }
 
     if (Node.isIdentifier(callee)) {
       const sym = symbolOf(callee);
@@ -336,6 +420,7 @@ export class DataFlowAnalyzer {
     args: Node[],
     callee: Node,
   ): TrackedValue | null {
+    if (receiver.wrappers?.length) return null;
     if (receiver.kind === "fetchResponse" && method === "json") {
       return { ...receiver, kind: "body", path: [] };
     }
@@ -369,21 +454,30 @@ export class DataFlowAnalyzer {
   /** Follows a tracked argument into a function defined in the project; falls back to a `derived` value. */
   private evaluateUserFunctionCall(call: CallExpression, args: Node[]): TrackedValue | null {
     const trackedArgs = args.map((arg) => this.evaluate(arg));
-    const firstTracked = trackedArgs.find((v): v is TrackedValue => v?.kind === "body");
+    const firstTracked = trackedArgs.find(isBody);
     if (!firstTracked) return null;
 
     const fn = resolveFunctionNode(call.getExpression());
     if (fn) {
+      // Evaluate the result for this call's arguments, then restore earlier bindings: a helper called with
+      // many values (`toRecord(a)`, `toRecord(b)`) or recursively (`walk(node.children[i])`) keeps the
+      // binding its body reads are recorded with, instead of the last (or an ever longer) one.
+      const previous = fn.getParameters().map((p) => {
+        const sym = Node.isIdentifier(p.getNameNode()) ? symbolOf(p.getNameNode()) : undefined;
+        return { sym, value: sym ? this.env.get(sym) : undefined };
+      });
       trackedArgs.forEach((value, i) => {
         if (value) this.bindParam(fn, i, value, args[i].getText());
       });
       const result = this.evaluateFunctionResult(fn);
+      for (const { sym, value } of previous) if (sym && value) this.env.set(sym, value);
       if (result) return result;
     }
-    return { ...firstTracked, path: [], flow: "derived" };
+    // Unknown transformation: assume it keeps the shape of its argument.
+    return { ...firstTracked, flow: "derived" };
   }
 
-  private evaluateQueryHook(args: Node[]): TrackedValue | null {
+  private evaluateQueryHook(args: Node[], wrapper: "query" | "vueQuery"): TrackedValue | null {
     for (const arg of args) {
       let fn: Node | undefined = arg;
       if (Node.isObjectLiteralExpression(arg)) {
@@ -392,7 +486,7 @@ export class DataFlowAnalyzer {
       }
       if (fn && isFunctionLike(fn)) {
         const result = this.evaluateFunctionResult(fn);
-        if (result?.kind === "body") return { ...result, kind: "envelope" };
+        if (result) return wrap(result, wrapper);
       }
     }
     return null;
@@ -428,6 +522,7 @@ export class DataFlowAnalyzer {
     if (mapped) {
       return {
         endpoint: { pattern: normalizePath(mapped.path), method: mapped.method },
+        baseUrl: null,
         request: UNKNOWN_REQUEST,
         wrapper: null,
         resolution: "config",
@@ -439,11 +534,13 @@ export class DataFlowAnalyzer {
 
     if (Node.isPropertyAccessExpression(callee) && AXIOS_METHODS.has(callee.getName())) {
       if (isAxiosInstance(callee.getExpression())) {
+        const baseUrl = axiosBaseUrl(callee.getExpression(), this.envVars);
         return {
           endpoint: {
-            pattern: args[0] ? resolveEndpointExpression(args[0]) : null,
+            pattern: args[0] ? resolveEndpointExpression(args[0], baseUrl, this.envVars) : null,
             method: callee.getName().toUpperCase() as HttpMethod,
           },
+          baseUrl,
           request: axiosRequest(callee.getName(), args),
           wrapper: null,
           resolution: "direct",
@@ -457,9 +554,10 @@ export class DataFlowAnalyzer {
     if (key === "fetch" || key === "window.fetch") {
       return {
         endpoint: {
-          pattern: args[0] ? resolveEndpointExpression(args[0]) : null,
+          pattern: args[0] ? resolveEndpointExpression(args[0], null, this.envVars) : null,
           method: fetchMethod(args[1]),
         },
+        baseUrl: null,
         request: fetchRequest(args),
         wrapper: null,
         resolution: "direct",
@@ -474,11 +572,13 @@ export class DataFlowAnalyzer {
     if (wrapper) {
       return {
         endpoint: wrapper.endpointFor(call),
+        baseUrl: wrapper.baseUrl,
         request: UNKNOWN_REQUEST,
         wrapper: fn,
         resolution: "wrapper",
         resultKind: wrapper.resultKind,
         resultPath: wrapper.resultPath,
+        resultWrappers: wrapper.resultWrappers,
         flow: wrapper.flow,
       };
     }
@@ -503,12 +603,14 @@ export class DataFlowAnalyzer {
         }
         const arg = call.getArguments()[urlParamIndex];
         return {
-          pattern: arg ? resolveEndpointExpression(arg) : null,
+          pattern: arg ? resolveEndpointExpression(arg, innerTarget.baseUrl, this.envVars) : null,
           method: innerTarget.endpoint.method,
         };
       },
+      baseUrl: innerTarget.baseUrl,
       resultKind: result.kind,
       resultPath: result.path,
+      resultWrappers: result.wrappers,
       flow: result.flow,
     };
     this.wrappers.set(fn, info);
@@ -528,9 +630,54 @@ export class DataFlowAnalyzer {
 
 function step(value: TrackedValue | null, segment: string): TrackedValue | null {
   if (!value) return null;
+  const [outer, ...rest] = value.wrappers ?? [];
+  if (outer) {
+    const inner = { ...value, wrappers: rest };
+    if (outer === "query" && segment === "data") return inner;
+    if (outer === "vueQuery" && segment === "data") return { ...value, wrappers: ["ref", ...rest] };
+    if (outer === "ref" && segment === "value") return inner;
+    return null;
+  }
   if (value.kind === "body") return { ...value, path: [...value.path, segment] };
   if (value.kind === "envelope" && segment === "data") return { ...value, kind: "body" };
   return null;
+}
+
+function wrap(value: TrackedValue, wrapper: ValueWrapper): TrackedValue {
+  return { ...value, wrappers: [wrapper, ...(value.wrappers ?? [])] };
+}
+
+function unwrapRef(value: TrackedValue): TrackedValue {
+  return value.wrappers?.[0] === "ref" ? { ...value, wrappers: value.wrappers.slice(1) } : value;
+}
+
+/** Module an identifier is imported from (`import { useQuery } from "@tanstack/vue-query"`), if any. */
+function importSource(node: Node): string | undefined {
+  const decl = (Node.isIdentifier(node) ? node : undefined)?.getSymbol()?.getDeclarations()[0];
+  return decl?.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)?.getModuleSpecifierValue();
+}
+
+/** Exported name an imported identifier refers to (`ref` for `import { ref as r } from "vue"`). */
+function importedName(node: Node): string | undefined {
+  const decl = node.getSymbol()?.getDeclarations()[0];
+  return Node.isImportSpecifier(decl) ? decl.getName() : undefined;
+}
+
+function isVueImport(node: Node): boolean {
+  const source = importSource(node);
+  return source === "vue" || source === "@vue/reactivity" || source === "@vue/runtime-core";
+}
+
+/** The variable a Vue component's `defineProps()` is assigned to (`const props = defineProps<...>()`). */
+function vuePropsDeclaration(file: SourceFile): Node | undefined {
+  for (const decl of file.getVariableDeclarations()) {
+    let init: Node | undefined = decl.getInitializer();
+    if (Node.isCallExpression(init) && init.getExpression().getText() === "withDefaults") init = init.getArguments()[0];
+    if (Node.isCallExpression(init) && ["defineProps", VUE_DEFINE_PROPS].includes(init.getExpression().getText())) {
+      return decl.getNameNode();
+    }
+  }
+  return undefined;
 }
 
 function unwrap(node: Node): Node {
@@ -568,14 +715,67 @@ function calleeKey(callee: Node): string | null {
   return null;
 }
 
-/** True for the `axios` import itself or a variable initialized with `axios.create(...)`. */
-function isAxiosInstance(expr: Node): boolean {
+/**
+ * True for the `axios` import itself or a variable initialized with an axios instance:
+ * `axios.create(...)`, another instance, or a call to a project factory function that returns one
+ * (`const api = createApiInstance({ baseURL })`).
+ */
+function isAxiosInstance(expr: Node, seen = new Set<Node>()): boolean {
   if (!Node.isIdentifier(expr)) return false;
   if (expr.getText() === "axios") return true;
   const decl = targetSymbol(expr)?.getDeclarations()[0];
-  if (!Node.isVariableDeclaration(decl)) return false;
-  const init = decl.getInitializer();
-  return Node.isCallExpression(init) && init.getExpression().getText() === "axios.create";
+  if (!Node.isVariableDeclaration(decl) || seen.has(decl)) return false;
+  seen.add(decl);
+  return createsAxiosInstance(decl.getInitializer(), seen);
+}
+
+function createsAxiosInstance(expr: Node | undefined, seen: Set<Node>): boolean {
+  if (!expr) return false;
+  const e = unwrap(expr);
+  if (Node.isIdentifier(e)) return isAxiosInstance(e, seen);
+  if (!Node.isCallExpression(e)) return false;
+  if (e.getExpression().getText() === "axios.create") return true;
+  const fn = resolveFunctionNode(e.getExpression());
+  if (!fn || seen.has(fn)) return false;
+  seen.add(fn);
+  return returnExpressions(fn).some((ret) => createsAxiosInstance(ret, seen));
+}
+
+/**
+ * The `baseURL` an axios instance was created with: from the object literal passed to `axios.create(...)` or
+ * to the factory that made it (`createApiInstance({ baseURL: API_PATH })`), or found inside the factory.
+ */
+function axiosBaseUrl(expr: Node, env: Record<string, string>, seen = new Set<Node>()): string | null {
+  if (!Node.isIdentifier(expr) || expr.getText() === "axios") return null;
+  const decl = targetSymbol(expr)?.getDeclarations()[0];
+  if (!Node.isVariableDeclaration(decl) || seen.has(decl)) return null;
+  seen.add(decl);
+  return creationBaseUrl(decl.getInitializer(), env, seen);
+}
+
+function creationBaseUrl(expr: Node | undefined, env: Record<string, string>, seen: Set<Node>): string | null {
+  if (!expr) return null;
+  const e = unwrap(expr);
+  if (Node.isIdentifier(e)) return axiosBaseUrl(e, env, seen);
+  if (!Node.isCallExpression(e)) return null;
+  for (const arg of e.getArguments()) {
+    if (!Node.isObjectLiteralExpression(arg)) continue;
+    const prop = arg.getProperty("baseURL");
+    if (Node.isPropertyAssignment(prop)) {
+      const init = prop.getInitializer();
+      return init ? resolveStaticString(init, env) : null;
+    }
+    if (Node.isShorthandPropertyAssignment(prop)) return resolveStaticString(prop, env);
+  }
+  if (e.getExpression().getText() === "axios.create") return null;
+  const fn = resolveFunctionNode(e.getExpression());
+  if (!fn || seen.has(fn)) return null;
+  seen.add(fn);
+  for (const ret of returnExpressions(fn)) {
+    const baseUrl = creationBaseUrl(ret, env, seen);
+    if (baseUrl !== null) return baseUrl;
+  }
+  return null;
 }
 
 /** axios.get(url, config) / axios.post(url, body, config): query keys from the URL and `config.params`. */

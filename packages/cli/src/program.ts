@@ -6,6 +6,9 @@ import {
   mergeGraphs,
   renderHtml,
   renderMermaid,
+  renderOntologyHtml,
+  renderOntologyMermaid,
+  renderOntologyTurtle,
   renderChangeReportMarkdown,
   renderContractReportMarkdown,
   type ChangeReport,
@@ -22,17 +25,18 @@ import {
   formatFieldImpact,
   formatFileImpact,
   formatIndexResult,
+  formatOntology,
   formatSearch,
   formatSummary,
 } from "./format.js";
 import type { Effort } from "@tacet-api/ai-anthropic";
 import { AI_PROVIDERS, createAiProvider } from "./ai.js";
 import { runCi, type CheckFailOn, type VerifyFailOn } from "./ci.js";
-import { TacetWorkspace, DEFAULT_INDEX_PATH } from "./workspace.js";
+import { TacetWorkspace, DEFAULT_INDEX_PATH, type RelationsResult } from "./workspace.js";
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
-type Format = "text" | "json" | "mermaid" | "html" | "markdown";
+type Format = "text" | "json" | "mermaid" | "html" | "markdown" | "turtle";
 type ImpactFailOn = "definite" | "likely" | "possible" | "never";
 type FailOn = "error" | "warning" | "never";
 
@@ -183,6 +187,54 @@ export function buildProgram(): Command {
       const graph = analyzer.fullGraph();
       const out = opts.out ?? (opts.format === "html" ? ".tacet/graph.html" : undefined);
       emit(render(opts.format, { value: graph, text: "", graph, title: "Tacet impact graph" }), out);
+    });
+
+  program
+    .command("ontology")
+    .description("Pages, components, functions, APIs, controllers and DTOs as an ontology: which page uses which API, and how")
+    .option("--focus <query>", "only the neighborhood of matching entities (a route, component, API, DTO, …)")
+    .option("--depth <n>", "with --focus: relations to follow from the matches", (v) => Number.parseInt(v, 10), 2)
+    .option("--no-files", "leave out File entities and definedIn relations")
+    .option("--all", "keep frontend functions that lead to no API")
+    .addOption(formatOption(["html", "text", "json", "mermaid", "turtle"], "html"))
+    .option("-o, --out <path>", "output file (default .tacet/ontology.html for html)")
+    .action((opts: { focus?: string; depth: number; files: boolean; all?: boolean; format: Format; out?: string }) => {
+      const ontology = workspace().ontology({
+        focus: opts.focus,
+        depth: opts.depth,
+        includeFiles: opts.files,
+        includeUnrelated: opts.all,
+      });
+      const title = opts.focus ? `Tacet ontology: ${opts.focus}` : "Tacet ontology";
+      const output =
+        opts.format === "json"
+          ? JSON.stringify(ontology, null, 2)
+          : opts.format === "turtle"
+            ? renderOntologyTurtle(ontology)
+            : opts.format === "mermaid"
+              ? renderOntologyMermaid(ontology)
+              : opts.format === "text"
+                ? formatOntology(ontology, opts.focus)
+                : renderOntologyHtml(ontology, { title, subtitle: `${ontology.pages.length} pages · ${ontology.stats.entities.Endpoint ?? 0} APIs · ${ontology.stats.triples} triples` });
+      emit(output, opts.out ?? (opts.format === "html" ? ".tacet/ontology.html" : undefined));
+    });
+
+  program
+    .command("relations")
+    .description("Query the relations stored in the index: a page's APIs, an API's pages, or subject / predicate / object")
+    .option("--page <route>", 'APIs a page uses, e.g. "/users/:id" (route or entity id)')
+    .option("--api <api>", 'pages using an API, e.g. "GET /users/{id}"')
+    .option("--subject <entity>", "relations from this entity (id or exact label)")
+    .option("--predicate <name>", "relations of this kind: showsComponent, renders, calls, requests, reads, handledBy, returns, …")
+    .option("--object <entity>", "relations to this entity (id or exact label)")
+    .option("--limit <n>", "at most this many relations", (v) => Number.parseInt(v, 10))
+    .addOption(formatOption(["text", "json"], "text"))
+    .action((opts: { page?: string; api?: string; subject?: string; predicate?: string; object?: string; limit?: number; format: Format }) => {
+      if (!opts.page && !opts.api && !opts.subject && !opts.predicate && !opts.object) {
+        throw new Error("Pass --page, --api, or --subject / --predicate / --object");
+      }
+      const result = workspace().relations(opts);
+      emit(opts.format === "json" ? JSON.stringify(result, null, 2) : formatRelations(result));
     });
 
   const impactFailOn = () =>
@@ -345,4 +397,31 @@ function setExitCode(report: ContractReport, failOn: FailOn): void {
     (failOn === "error" && report.counts.error > 0) ||
     (failOn === "warning" && report.counts.error + report.counts.warning > 0);
   if (failing) process.exitCode = 1;
+}
+
+function formatRelations(result: RelationsResult): string {
+  const label = (id: string) => result.entities[id]?.label ?? id;
+  const lines: string[] = [];
+  if (result.pageApis.length) {
+    lines.push(`Page → API (${result.pageApis.length}):`);
+    for (const use of result.pageApis) {
+      const tags = [use.status && use.status !== "matched" ? use.status : null, use.common ? "common" : null].filter(Boolean);
+      lines.push(`  ${label(use.page)}  →  ${use.apiKey}${tags.length ? `  [${tags.join(", ")}]` : ""}`);
+      lines.push(`      via ${use.via.slice(1, -1).join(" → ") || "(direct)"}`);
+      if (use.fields.length) lines.push(`      reads ${use.fields.join(", ")}`);
+    }
+  }
+  if (result.relatedPages.length) {
+    lines.push("", `Related pages (sharing non-common APIs):`);
+    for (const r of result.relatedPages) lines.push(`  ${label(r.page)}  ${r.shared} shared  ${r.apis.slice(0, 3).join(", ")}${r.apis.length > 3 ? ", …" : ""}`);
+  }
+  if (result.relations.length) {
+    if (lines.length) lines.push("");
+    lines.push(`Relations (${result.relations.length}):`);
+    for (const t of result.relations) {
+      const where = t.evidence[0] ? `  ${t.evidence[0].file}:${t.evidence[0].line}` : "";
+      lines.push(`  ${label(t.subject)}  —${t.predicate}→  ${label(t.object)}${t.inferred ? " (inferred)" : ""}${where}`);
+    }
+  }
+  return lines.length ? lines.join("\n") : "No relations found.";
 }

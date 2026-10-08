@@ -9,6 +9,9 @@ export type {
   ExtractBackendResult,
   IndexFrontendOptions,
   IndexFrontendResult,
+  OntologyQueryOptions,
+  RelationsQuery,
+  RelationsResult,
   VerifiedGitChangeReport,
   VerifyChangesOptions,
 } from "./workspace.js";
@@ -17,4 +20,5 @@ export type { AiProviderName, CreateAiProviderOptions } from "./ai.js";
 export { changedSourceFiles } from "./git.js";
 export * from "./format.js";
 export { runCi } from "./ci.js";
+export { relaunchWithLargerHeap } from "./heap.js";
 export type { CiOptions, CiResult, CheckFailOn, ImpactFailOn, VerifyFailOn } from "./ci.js";

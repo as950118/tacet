@@ -106,6 +106,18 @@ transform(user).name                       // → name (derived: 확실하지 �
 axios.get("/users", { params: { page } })  // query key: page
 ```
 
+Vue 단일 파일 컴포넌트(`.vue`)도 분석한다. `<script>`/`<script setup>`은 그대로, `<template>`의 표현식(`{{ }}`, `:prop`,
+`v-if`, `v-for`, `@event`, `v-slot`)은 같은 줄의 TypeScript로 바꿔 분석한다. Vue Query 결과(`data.value`), `ref`/`computed`,
+template의 ref 자동 unwrap, `<UserCard :user="u" />` → 자식의 `defineProps`까지 추적한다.
+
+```vue
+<li v-for="u in users.data" :key="u.id">{{ u.name }}</li>   <!-- → data[].id, data[].name -->
+<UserCard :user-info="u" />                                <!-- UserCard.vue의 userInfo.email까지 -->
+```
+
+큰 프로젝트에서는 TypeScript type checker가 Node 기본 heap(약 4GB)을 넘을 수 있어서, CLI와 MCP 서버는 heap 크기를 직접
+지정하지 않았으면 시스템 메모리의 3/4(최대 16GB)로 다시 실행한다.
+
 ### 2. Backend API 추출 (Spring Boot)
 
 ```bash
@@ -154,6 +166,67 @@ tacet impact --api "GET /users/{id}" -f mermaid              # PR 코멘트용 M
 
 HTML 그래프는 API → 응답 필드 → 함수/컴포넌트 → 파일의 계층 그래프다. 노드를 클릭하면 연결된 전체를 추적하고,
 검색과 종류 필터, 검색 가능한 목록을 제공한다. 외부 리소스 없이 단일 파일로 동작한다.
+
+### 4-1. Ontology — 어떤 페이지가 어떤 API와 연결되어 있나
+
+```bash
+tacet ontology                                  # .tacet/ontology.html (인터랙티브 탐색기)
+tacet ontology -f text                          # 페이지 → API, API → 페이지 목록
+tacet ontology --focus "/users/:id" -f mermaid  # 특정 페이지/컴포넌트/API/DTO 주변만
+tacet ontology -f turtle -o tacet.ttl           # RDF/OWL (triple store, SPARQL)
+tacet ontology -f json                          # entities + triples + page→API 행
+```
+
+```text
+Pages → APIs (3):
+  /users/:id  UserPage  src/App.tsx
+    ✓ GET /users/{id}
+        via UserPage → getUser
+        reads age, name
+```
+
+프로젝트를 엔티티(Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto, DtoField, Enum, File)와
+관계(`showsComponent`, `renders`, `calls`, `requests`, `reads`, `handledBy`, `accepts`, `returns`, `hasField`, `typedAs`,
+`definedIn`)로 표현한다. 관계마다 근거 코드 위치가 붙고, `usesApi`(페이지 → API)는 이 관계들을 따라가 추론한다.
+대부분의 페이지가 쓰는 API(권한 조회, 아이콘 fetch 등)는 "공통 API"로 표시되어 기본 보기와 관련 페이지 계산에서 빠지고,
+각 페이지에는 API를 함께 쓰는 "관련 페이지" 순위가 붙는다(`tacet relations --page`에도 나온다). 서로 렌더/호출하는
+컴포넌트는 그래프에서 노드 하나로 합쳐진다. 페이지가 실제로 요청하는 API만 연결하며, 공용 helper(`formatDate(row.createdAt)`)가 다른 API 데이터를 읽었다는 이유만으로는 연결하지 않는다.
+읽는 응답 필드는 실제 DTO 필드(`Profile.email`)에 연결된다.
+
+페이지는 React Router(`<Route>` JSX, route 객체, `lazy`), vue-router(`{ path, component: () => import("./X.vue") }`,
+다른 파일의 route 배열을 `children: [...routes]`로 합친 경우 포함), Next.js(`pages/`, `app/**/page.tsx`), Remix/React Router
+`app/routes/`에서 찾는다. 인식하지 못하는 router는 `tacet.config.json`의 `routes`로 지정하고, router가 하나도 없으면
+`pages/`·`views/`·`screens/` 디렉터리의 export된 컴포넌트를 (경로 없는) 페이지로 본다.
+
+HTML 탐색기: class별 레인 그래프, Page ↔ API 탭, triple 표, schema 다이어그램. Page ↔ API 탭은 "Pages → APIs" / "APIs → pages" 목록(영역별 그룹, 필터, broken만 보기)과
+선택한 항목의 API(또는 페이지)를 broken 먼저 보여주고, 펼치면 호출 경로와 읽는 필드가 나온다.
+목록은 경로 트리로 drill down 한다: 페이지는 `/aws` → `/aws/compute` → …, API는 method·role·version을 뺀 경로
+(`inventory` → `aws` → `compute` …). 상단 breadcrumb으로 범위를 오가고, 아무것도 고르지 않으면 그 범위의 요약
+(이 페이지들이 쓰는 API, 또는 이 API들을 쓰는 페이지, broken 먼저·빈도순)이 나온다. 그래프 탭의 페이지 목록도 같다. 작은 프로젝트에서는 Page × API 매트릭스도 볼 수 있다. 그래프는 큰 프로젝트에서 전체를 그리지 않고
+왼쪽 페이지 목록이나 검색(종류별 추천)에서 고른 하나를 중심으로 위·아래로 연결된 것만 다시 배치한다(깊이 1/2/3/전체, 이동 경로는
+breadcrumb). 기본값 "API paths only"는 API까지 이어지지 않는 UI 컴포넌트와 공용 formatter의 `reads` 연결을 숨긴다. 노드 클릭은
+경로 강조, 더블클릭은 그 노드로 재배치. 작은 프로젝트(150개 이하)는 처음부터 전체 그래프를 보여준다.
+
+### 4-2. 관계는 index DB에 저장된다
+
+`index`/`extract-backend`가 index를 갱신할 때마다 관계(ontology)를 다시 계산해 같은 SQLite 파일의 `entities`, `relations`,
+`page_apis` 테이블에 저장한다. 다시 분석하지 않고 바로 조회할 수 있다.
+
+```bash
+tacet relations --page "/users/:id"                      # 이 페이지가 쓰는 API (호출 경로, 읽는 필드)
+tacet relations --api "GET /users/{id}"                  # 이 API를 쓰는 페이지
+tacet relations --subject UserPage --predicate renders   # 관계 직접 조회 (subject / predicate / object, -f json)
+```
+
+```sql
+-- 이 API를 쓰는 페이지
+SELECT e.label, p.via, p.fields FROM page_apis p JOIN entities e ON e.id = p.page WHERE p.api_key = 'GET /users/{id}';
+-- 백엔드에 없는 API를 쓰는 페이지
+SELECT e.label, p.api_key, p.status FROM page_apis p JOIN entities e ON e.id = p.page WHERE p.status IN ('not-found', 'method-mismatch');
+-- 어떤 컴포넌트를 렌더링하는 곳
+SELECT s.label, s.file FROM relations r JOIN entities s ON s.id = r.subject JOIN entities o ON o.id = r.object
+WHERE r.predicate = 'renders' AND o.label = 'UserCard';
+```
 
 ### 5. Backend API 변경 → Frontend 영향
 
@@ -236,7 +309,7 @@ PR 코멘트(갱신)로 남기고, 기준 이상이면 job을 실패시킨다. �
 
 같은 기능을 MCP tool로 제공한다. tool: `index_frontend`, `extract_backend`, `check_contract`,
 `analyze_api_changes`, `diff_api_changes`, `verify_api_changes`, `impact_of_api`,
-`impact_of_file`, `impact_of_field`, `search`, `impact_summary`, `render_graph`.
+`impact_of_file`, `impact_of_field`, `search`, `impact_summary`, `render_graph`, `page_apis`, `ontology`.
 
 **독립 MCP 서버 (stdio)** — Claude Desktop / Claude Code 등에 바로 연결:
 
@@ -285,12 +358,29 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
   "apiClientMap": {
     "productApi.getProduct": { "method": "GET", "path": "/products/{id}" }
   },
-  "linking": { "frontendBasePath": "/api", "backendBasePath": "" }
+  "linking": {
+    "frontendBasePath": "/api",
+    "backendBasePath": "",
+    "pathRewrites": { "/api/console": "" }
+  },
+  "envFiles": ["apps/admin-web/.env"],
+  "env": { "VITE_API_PREFIX": "/api/admin" },
+  "commonApis": { "share": 0.25, "minPages": 8, "include": [], "exclude": [] },
+  "routes": { "/users/:id": "src/pages/User.tsx#UserPage" }
 }
 ```
 
 - `apiClientMap`: endpoint를 자동 추론할 수 없는 API client(예: 제네릭 `request({ method, url })` 헬퍼)의 명시적 매핑.
-- `linking`: frontend HTTP client의 baseURL, backend context-path 등 prefix 차이.
+- `linking`: frontend HTTP client의 baseURL, backend context-path 등 prefix 차이. `pathRewrites`는 proxy/API gateway가
+  backend로 넘기기 전에 바꾸는 prefix(긴 prefix 우선).
+- `commonApis`: "공통 API"(대부분의 페이지가 쓰는 권한 조회, 아이콘 fetch 등) 기준. 전체 페이지의 `share`(기본 0.25) 이상이면서
+  `minPages`(기본 8) 이상 페이지가 쓰는 API가 공통이고, `include`/`exclude`(예: `"GET /admin/v1/auth"`)로 강제할 수 있다.
+  index DB·CLI·MCP가 이 기준을 쓴다. HTML 탐색기 상단의 "Common APIs" 패널에서는 비율·최소 페이지 수·API별 공통 여부를
+  개인 설정으로 바꿀 수 있고, 이 설정은 그 브라우저에만 저장된다(localStorage, 프로젝트별).
+- `envFiles` / `env`: axios `baseURL`에 쓰이는 build-time 환경변수(`import.meta.env.X`, `process.env.X`). `envFiles`는
+  frontend root 기준 dotenv 파일이고 `env`가 우선한다. 같은 코드를 여러 앱(예: admin/user)으로 빌드하면 앱별 config로
+  각각 검사한다.
+- `routes`: 자동 인식되지 않는 router의 페이지. `경로 → 파일[#컴포넌트]` (컴포넌트 생략 시 default export).
 
 ## 로드맵
 
@@ -299,6 +389,7 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
 | 1 | TypeScript AST 분석 + Index | ✅ |
 | 2 | Java Spring API 분석 (JavaParser) | ✅ |
 | 3 | Backend API ↔ Frontend 호출 연결, contract check, incremental index, 영향 범위 탐색·그래프 | ✅ |
+| - | Ontology: 페이지 ↔ 컴포넌트 ↔ API ↔ Controller ↔ DTO 관계 (HTML, RDF/Turtle, MCP) | ✅ |
 | 4 | API 변경 감지 | ✅ |
 | 5 | Static impact analysis (DEFINITE / LIKELY / POSSIBLE) | ✅ |
 | 6 | AI verification (provider 추상화, Anthropic 구현, evidence 검증) | ✅ |

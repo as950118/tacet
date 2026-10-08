@@ -65,6 +65,17 @@ class TestWithBackend:
         path = lens.render_graph("html", out=tmp_path / "graph.html")
         assert "<title>Tacet impact graph</title>" in open(path, encoding="utf-8").read()
 
+    def test_ontology(self, lens):
+        pages = lens.page_apis()
+        assert {p["component"] for p in pages} == {"UserPage", "UserList"}
+        by_api = lens.page_apis(api="GET /users/{id}")
+        assert [p["component"] for p in by_api[0]["pages"]] == ["UserPage"]
+        assert lens.ontology(focus="UserCard", format="turtle").startswith("@prefix tacet:")
+        stored = lens.relations(api="GET /users/{id}")
+        assert any(stored["entities"][u["page"]]["label"] == "UserPage (page)" for u in stored["pageApis"])
+        ontology = lens.ontology(include_files=False)
+        assert not any(e["class"] == "File" for e in ontology["entities"])
+
     def test_fastmcp_tools(self, lens):
         fastmcp = pytest.importorskip("fastmcp")
         from tacet.fastmcp import register_tools
@@ -76,7 +87,7 @@ class TestWithBackend:
             return "ok"
 
         names = register_tools(mcp, lens, prefix="tacet_")
-        assert len(names) == 12
+        assert len(names) == 15
 
         async def run():
             async with fastmcp.Client(mcp) as client:

@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
-const SOURCE = /\.(ts|tsx|mts|cts)$/;
+const SOURCE = /\.(ts|tsx|mts|cts|vue)$/;
 
 /**
  * TypeScript files under `dir` changed since `ref` (committed, staged, unstaged

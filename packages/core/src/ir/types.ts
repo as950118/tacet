@@ -49,6 +49,37 @@ export interface FunctionInfo {
   calls: string[];
   location: SourceLocation;
   containingComponent: string | null;
+  /** Innermost enclosing function, or null for module-level functions. */
+  parentId?: string | null;
+  /** Project functions this function calls (resolved through imports). */
+  invokes?: string[];
+  /** Project components this function renders as JSX elements. */
+  renders?: string[];
+}
+
+/**
+ * Where a page route was found:
+ * - react-router: `<Route path element>` JSX or `{ path, element | Component }` route objects
+ * - vue-router:   `{ path, component }` route objects whose component is a .vue file
+ * - file-system:  Next.js `pages/` / `app/**\/page.tsx`, Remix / React Router `app/routes/`
+ * - config:       tacet.config.json `routes`
+ * - convention:   no router found; exported components in pages/, views/, screens/ directories
+ */
+export type RouteSource = "react-router" | "vue-router" | "file-system" | "config" | "convention";
+
+/** A page of the frontend: a route path (when known) and the component it shows. */
+export interface RouteInfo {
+  id: string;
+  /** e.g. "/users/:id"; null when the page was recognized by convention only. */
+  path: string | null;
+  /** The page component's function id, when it is defined in the project. */
+  componentId: string | null;
+  /** Component name as written at the route, e.g. "UserPage". */
+  component: string;
+  source: RouteSource;
+  /** Where the route is declared (the router file, or the page file for file-system routes). */
+  file: string;
+  location: SourceLocation;
 }
 
 /**
@@ -104,6 +135,11 @@ export interface PropertyAccessInfo {
   containingFunctionId: string | null;
   containingComponent: string | null;
   code: string;
+  /**
+   * Id of the `??` / `||` chain this read is one operand of (`a.metaData ?? a.meta_data`). Such reads are
+   * defensive alternatives: when another operand of the chain matches the response, this one is not an error.
+   */
+  fallbackGroup?: string;
 }
 
 export interface FrontendManifest {
@@ -114,6 +150,8 @@ export interface FrontendManifest {
   functions: FunctionInfo[];
   apiCalls: ApiCallInfo[];
   propertyAccesses: PropertyAccessInfo[];
+  /** Pages (absent in manifests written before routes were extracted). */
+  routes?: RouteInfo[];
 }
 
 // ---------------------------------------------------------------------------

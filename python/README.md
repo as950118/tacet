@@ -15,6 +15,7 @@ lens.extract_backend()
 
 report = lens.check(changed_since="origin/main")      # PASS / WARNING / FAIL + issues with file:line
 lens.impact_of_api("GET /users/{id}", graph="mermaid")
+lens.page_apis(api="GET /users/{id}")      # which pages use this API, and through what
 lens.impact_of_file("src/api/user.ts")
 lens.impact_of_field("UserResponse.name")
 ```
@@ -31,7 +32,7 @@ mcp.run()
 ```
 
 Tools: `index_frontend`, `extract_backend`, `check_contract`, `impact_of_api`, `impact_of_file`,
-`impact_of_field`, `search`, `impact_summary`, `render_graph`.
+`impact_of_field`, `search`, `impact_summary`, `render_graph`, `page_apis`, `ontology`.
 
 ## Tests
 

@@ -3,10 +3,15 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import {
   attachGraph,
+  findEntities,
   mergeGraphs,
+  pagesByApi,
   renderChangeReportMarkdown,
   renderHtml,
   renderMermaid,
+  renderOntologyHtml,
+  renderOntologyMermaid,
+  renderOntologyTurtle,
   type ChangeReport,
   type VerifiedChangeReport,
 } from "@tacet-api/core";
@@ -194,6 +199,84 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
       parameters: {},
       readOnly: true,
       run: async () => ws.impact().summary(),
+    }),
+    tool({
+      name: "page_apis",
+      title: "Which page uses which API",
+      description:
+        "Page ↔ API map. Pages come from React Router routes, Next.js / Remix file routes, `routes` in tacet.config.json, " +
+        "or (without a router) components in pages/ views/ screens/ directories. For each page: the APIs it requests or " +
+        "whose data it shows, the component → function chain leading there, and the response fields read. Pass `page` " +
+        "(route or component) or `api` (e.g. \"GET /users/{id}\") to filter; with `api`, the result is grouped by API.",
+      parameters: {
+        page: z.string().optional().describe('Route or component, e.g. "/users/:id" or "UserPage" (substring match)'),
+        api: z.string().optional().describe('API, e.g. "GET /users/{id}" or "/users" (substring match)'),
+      },
+      readOnly: true,
+      run: async (a) => {
+        const ontology = ws.ontology({ includeFiles: false });
+        if (a.api) {
+          const q = a.api.toLowerCase();
+          return pagesByApi(ontology).filter((row) => row.apiKey.toLowerCase().includes(q));
+        }
+        if (!a.page) return ontology.pages;
+        const q = a.page.toLowerCase();
+        return ontology.pages.filter(
+          (p) => (p.route ?? "").toLowerCase().includes(q) || p.component.toLowerCase().includes(q),
+        );
+      },
+    }),
+    tool({
+      name: "relations",
+      title: "Stored relations",
+      description:
+        "Query the relations stored in the index database (rebuilt on every index update): `page` returns the APIs a page " +
+        "uses with the call path and fields read; `api` returns the pages using an API; `subject` / `predicate` / `object` " +
+        "return matching relations (showsComponent, renders, calls, requests, reads, handledBy, accepts, returns, hasField, " +
+        "typedAs, definedIn, usesApi) with file:line evidence. Entities are given by id or exact label.",
+      parameters: {
+        page: z.string().optional().describe('Page route or id, e.g. "/users/:id"'),
+        api: z.string().optional().describe('API, e.g. "GET /users/{id}"'),
+        subject: z.string().optional().describe("Entity id or exact label"),
+        predicate: z.string().optional().describe('Relation kind, e.g. "renders"'),
+        object: z.string().optional().describe("Entity id or exact label"),
+        limit: z.number().int().min(1).max(5000).optional(),
+      },
+      readOnly: true,
+      run: async (a) => ws.relations(a),
+    }),
+    tool({
+      name: "ontology",
+      title: "Project ontology",
+      description:
+        "The project as typed entities (Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto, DtoField, Enum, " +
+        "File) and subject–predicate–object triples (showsComponent, renders, calls, requests, reads, usesApi [inferred], " +
+        "handledBy, accepts, returns, hasField, typedAs, definedIn) with file:line evidence. Use `focus` to get only the " +
+        "neighborhood of an entity. Formats: json (entities + triples + page→API rows), mermaid, turtle (RDF/OWL for triple " +
+        "stores and SPARQL), html (interactive explorer written to `outPath`).",
+      parameters: {
+        focus: z.string().optional().describe("Entity to center on: a route, component, function, API, controller or DTO"),
+        depth: z.number().int().min(1).max(6).default(2).describe("With focus: relations to follow"),
+        format: z.enum(["json", "mermaid", "turtle", "html"]).default("json"),
+        includeFiles: z.boolean().default(false).describe("Include File entities and definedIn triples"),
+        outPath: z.string().optional().describe("HTML output path (default .tacet/ontology.html)"),
+      },
+      readOnly: false,
+      run: async (a) => {
+        const ontology = ws.ontology({ focus: a.focus, depth: a.depth, includeFiles: a.includeFiles || a.format === "html" });
+        if (a.focus && !findEntities(ontology, a.focus).length) {
+          return { error: `No entity matches "${a.focus}". Try the search tool.`, stats: ontology.stats };
+        }
+        if (a.format === "mermaid") return { mermaid: renderOntologyMermaid(ontology), stats: ontology.stats };
+        if (a.format === "turtle") return { turtle: renderOntologyTurtle(ontology), stats: ontology.stats };
+        if (a.format === "html") {
+          const out = resolve(a.outPath ?? ".tacet/ontology.html");
+          mkdirSync(dirname(out), { recursive: true });
+          writeFileSync(out, renderOntologyHtml(ontology, { title: `Tacet ontology${a.focus ? `: ${a.focus}` : ""}` }));
+          return { path: out, stats: ontology.stats };
+        }
+        return ontology;
+      },
     }),
     tool({
       name: "render_graph",

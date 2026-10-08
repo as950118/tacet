@@ -1,4 +1,4 @@
-import { groupErrors } from "@tacet-api/core";
+import { groupErrors, pagesByApi } from "@tacet-api/core";
 import type {
   ApiImpact,
   ChangeReport,
@@ -8,6 +8,7 @@ import type {
   FieldImpact,
   FileImpact,
   ImpactSummary,
+  Ontology,
   SearchHit,
 } from "@tacet-api/core";
 import type { ExtractBackendResult, IndexFrontendResult } from "./workspace.js";
@@ -163,6 +164,37 @@ export function formatSummary(s: ImpactSummary): string {
   for (const f of s.files) lines.push(`  ${String(f.apis).padStart(3)}  ${f.file}`);
   if (s.unusedEndpoints.length) {
     lines.push("", `Backend endpoints no frontend code calls (${s.unusedEndpoints.length}):`, ...s.unusedEndpoints.map((e) => `  ${e}`));
+  }
+  return lines.join("\n");
+}
+
+export function formatOntology(o: Ontology, focus?: string): string {
+  const counts = Object.entries(o.stats.entities)
+    .filter(([cls]) => cls !== "File")
+    .map(([cls, n]) => `${n} ${cls}`)
+    .join(", ");
+  const lines = [`Tacet ontology${focus ? ` around "${focus}"` : ""}: ${counts}; ${o.stats.triples} triples (${o.stats.inferred} inferred)`];
+
+  lines.push("", `Pages → APIs (${o.pages.length}):`);
+  if (!o.pages.length) lines.push("  (no pages found: add React Router / Next.js / Remix routes, or `routes` in tacet.config.json)");
+  for (const page of o.pages) {
+    lines.push(`  ${page.route ?? "(no route)"}  ${page.component}  ${page.file}`);
+    if (!page.apis.length) lines.push("      (uses no API)");
+    for (const api of page.apis) {
+      const status = api.status === "matched" || api.status === "no-backend" || !api.status ? "" : `  [${api.status}]`;
+      lines.push(`    ${statusMark(api.status ?? "matched")} ${api.apiKey}${status}`);
+      lines.push(`        via ${api.via.slice(1, -1).join(" → ") || "(direct)"}`);
+      if (api.fields.length) lines.push(`        reads ${api.fields.join(", ")}`);
+    }
+  }
+
+  const byApi = pagesByApi(o);
+  lines.push("", `APIs → pages (${byApi.length}):`);
+  const width = Math.min(40, Math.max(0, ...byApi.map((a) => a.apiKey.length)));
+  for (const api of byApi) {
+    const pages = api.pages.map((p) => p.route ?? p.component);
+    const status = api.status === "matched" || api.status === "no-backend" ? "" : ` [${api.status}]`;
+    lines.push(`  ${statusMark(api.status ?? "matched")} ${api.apiKey.padEnd(width)}  ${pages.length ? pages.join(", ") : "—"}${status}`);
   }
   return lines.join("\n");
 }

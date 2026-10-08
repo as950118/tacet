@@ -15,6 +15,7 @@ export type IssueCode =
   | "NOT_AN_ARRAY"
   | "NOT_AN_OBJECT"
   | "UNVERIFIABLE_FIELD"
+  | "FALLBACK_FIELD_NOT_FOUND"
   | "UNKNOWN_BODY_FIELD"
   | "MISSING_BODY_FIELD"
   | "UNKNOWN_QUERY_PARAM"
@@ -74,6 +75,7 @@ export function checkContract(model: ProjectModel, options: ContractCheckOptions
   const scope = options.files ? new Set(options.files) : null;
   const { calls, accesses } = selectScope(model, scope);
   const issues: ContractIssue[] = [];
+  const matchedFallbacks = matchedFallbackGroups(calls, accesses, model);
   const apis = new Map<string, CheckedApi>();
 
   for (const call of calls) {
@@ -114,7 +116,7 @@ export function checkContract(model: ProjectModel, options: ContractCheckOptions
 
     for (const access of accesses.get(call.id) ?? []) {
       api.fieldReads++;
-      if (endpoint) checkAccess(access, call, endpoint, apiKey, model, issues);
+      if (endpoint) checkAccess(access, call, endpoint, apiKey, model, issues, matchedFallbacks);
     }
   }
 
@@ -208,6 +210,26 @@ function checkRequest(
   }
 }
 
+/** `??` / `||` chains in which at least one read matches the response. */
+function matchedFallbackGroups(
+  calls: ApiCallInfo[],
+  accesses: Map<string, PropertyAccessInfo[]>,
+  model: ProjectModel,
+): Set<string> {
+  const matched = new Set<string>();
+  for (const call of calls) {
+    const endpointId = model.link(call.id)?.endpointId;
+    const response = endpointId ? model.endpoints.get(endpointId)?.response : null;
+    if (!response) continue;
+    for (const access of accesses.get(call.id) ?? []) {
+      if (access.fallbackGroup && checkPath(response, access.path, model).status === "ok") {
+        matched.add(access.fallbackGroup);
+      }
+    }
+  }
+  return matched;
+}
+
 function checkAccess(
   access: PropertyAccessInfo,
   call: ApiCallInfo,
@@ -215,6 +237,7 @@ function checkAccess(
   apiKey: string,
   model: ProjectModel,
   issues: ContractIssue[],
+  matchedFallbacks: Set<string>,
 ): void {
   const push = (severity: Severity, code: IssueCode, message: string, suggestion: string | null = null) =>
     issues.push({
@@ -237,6 +260,11 @@ function checkAccess(
     return;
   }
   const segment = access.path[result.at];
+  if (access.fallbackGroup && matchedFallbacks.has(access.fallbackGroup)) {
+    push("info", "FALLBACK_FIELD_NOT_FOUND",
+      `\`${shown}\` does not exist in ${endpoint.id}, but another alternative of this fallback chain does`);
+    return;
+  }
   const severity = derived ? "warning" : "error";
   if (result.reason === "no-such-field") {
     push(severity, "FIELD_NOT_FOUND",

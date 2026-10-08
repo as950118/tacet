@@ -6,3 +6,4 @@ export * from "./graph.js";
 export * from "./impact.js";
 export * from "./diff.js";
 export * from "./change-impact.js";
+export * from "./ontology.js";

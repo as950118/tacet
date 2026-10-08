@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   analyzeChangeImpact,
+  buildOntology,
   checkContract,
+  focusOntology,
   verifyChangeReport,
   ImpactAnalyzer,
   IndexStore,
@@ -17,6 +19,11 @@ import {
   type ContractReport,
   type FrontendIndexUpdate,
   type FrontendManifest,
+  type Ontology,
+  type OntologyEntity,
+  type OntologyOptions,
+  type OntologyTriple,
+  type StoredPageApi,
   type VerifiedChangeReport,
 } from "@tacet-api/core";
 import { JavaExtractor } from "@tacet-api/extractor-java";
@@ -118,6 +125,34 @@ const EMPTY_INPUTS = {
   after: EMPTY_BACKEND,
 };
 
+export interface OntologyQueryOptions extends OntologyOptions {
+  /** Only the neighborhood of entities matching this (a page route, component, API, DTO, …). */
+  focus?: string;
+  /** With `focus`: how many relations away from the matches to include (default 2). */
+  depth?: number;
+}
+
+export interface RelationsQuery {
+  /** A page: its route (e.g. "/users/:id") or entity id. Returns the APIs it uses. */
+  page?: string;
+  /** An API: "GET /users/{id}" or entity id. Returns the pages using it. */
+  api?: string;
+  /** Relations with this subject / predicate / object (entity id or exact label). */
+  subject?: string;
+  predicate?: string;
+  object?: string;
+  limit?: number;
+}
+
+export interface RelationsResult {
+  /** The entities the query named (and those the results refer to), by id. */
+  entities: Record<string, Pick<OntologyEntity, "class" | "label" | "file" | "line" | "status">>;
+  relations: OntologyTriple[];
+  pageApis: StoredPageApi[];
+  /** With `page`: pages sharing the most non-common APIs with it. */
+  relatedPages: Array<{ of: string; page: string; shared: number; apis: string[] }>;
+}
+
 export interface CheckOptions {
   files?: string[];
   changedSince?: string;
@@ -152,7 +187,9 @@ export class TacetWorkspace {
 
     const update = this.withStore((store) => {
       store.writeConfig(config);
-      return store.writeManifest(manifest);
+      const written = store.writeManifest(manifest);
+      this.writeRelations(store);
+      return written;
     });
     const apis = scope ? this.apisUsedBy(scope) : [];
     return { ...update, indexPath: this.indexPath, frontendDir: root, scope, apis };
@@ -163,7 +200,11 @@ export class TacetWorkspace {
     if (!existsSync(root)) throw new Error(`Backend directory not found: ${root}`);
     const manifest = await new JavaExtractor({ jarPath: options.jarPath }).extract(root);
     if (options.outPath) writeJson(options.outPath, manifest);
-    const update = this.withStore((store) => store.writeBackendManifest(manifest));
+    const update = this.withStore((store) => {
+      const written = store.writeBackendManifest(manifest);
+      this.writeRelations(store);
+      return written;
+    });
     return {
       indexPath: this.indexPath,
       endpoints: update.endpoints,
@@ -227,7 +268,12 @@ export class TacetWorkspace {
       throw new Error("No baseline backend contract in the index. Run `tacet extract-backend <dir>` on the current backend first.");
     }
     const after = await new JavaExtractor({ jarPath: options.jarPath }).extract(root);
-    if (options.save) this.withStore((store) => store.writeBackendManifest(after));
+    if (options.save) {
+      this.withStore((store) => {
+        store.writeBackendManifest(after);
+        this.writeRelations(store);
+      });
+    }
     return { frontend, before, after, config };
   }
 
@@ -256,11 +302,71 @@ export class TacetWorkspace {
   }
 
   model(): ProjectModel {
+    return this.withStore((store) => this.modelFrom(store));
+  }
+
+  private modelFrom(store: IndexStore): ProjectModel {
+    const frontend = store.readFrontendManifest();
+    if (!frontend) throw new Error(`No frontend index in ${this.indexPath}. Run \`tacet index <frontendDir>\` first.`);
+    const config = this.configPath ? loadConfig(this.configPath) : store.readConfig();
+    return new ProjectModel(frontend, store.readBackendManifest(), config);
+  }
+
+  /**
+   * Keeps the relation tables (entities, relations, page_apis) in step with the facts: rebuilt from the
+   * stored manifests after every write, with every frontend function kept (not only those leading to an API).
+   */
+  private writeRelations(store: IndexStore): void {
+    if (store.readFrontendManifest() === null) return;
+    const model = this.modelFrom(store);
+    store.writeRelations(buildOntology(model, { includeUnrelated: true }), model.config);
+  }
+
+  /** Queries the stored relations: a page's APIs, an API's pages, or relations by subject / predicate / object. */
+  relations(query: RelationsQuery): RelationsResult {
     return this.withStore((store) => {
-      const frontend = store.readFrontendManifest();
-      if (!frontend) throw new Error(`No frontend index in ${this.indexPath}. Run \`tacet index <frontendDir>\` first.`);
+      // A different config (e.g. --config with another commonApis rule) rebuilds the stored relations.
       const config = this.configPath ? loadConfig(this.configPath) : store.readConfig();
-      return new ProjectModel(frontend, store.readBackendManifest(), config);
+      if (!store.hasRelations() || !store.relationsBuiltWith(config)) this.writeRelations(store);
+      const entities: RelationsResult["entities"] = {};
+      const note = (e: OntologyEntity | null) => {
+        if (e) entities[e.id] = { class: e.class, label: e.label, file: e.file, line: e.line, status: e.status };
+      };
+      const resolve = (key: string, cls?: string): string[] => {
+        const found = store.findEntitiesByKey(key, cls);
+        if (!found.length) throw new Error(`No ${cls ?? "entity"} "${key}" in the index`);
+        found.forEach(note);
+        return found.map((e) => e.id);
+      };
+      const pageApis: StoredPageApi[] = [];
+      const relatedPages: RelationsResult["relatedPages"] = [];
+      if (query.page !== undefined) {
+        for (const id of resolve(query.page, "Page")) {
+          pageApis.push(...store.pageApis({ page: id }));
+          relatedPages.push(...store.relatedPages(id).map((r) => ({ of: id, ...r })));
+        }
+      }
+      if (query.api !== undefined) {
+        const ids = store.findEntitiesByKey(query.api, "Endpoint").length ? resolve(query.api, "Endpoint") : resolve(`api:${query.api}`, "Endpoint");
+        for (const id of ids) pageApis.push(...store.pageApis({ endpoint: id }));
+      }
+      const relations: OntologyTriple[] = [];
+      if (query.subject !== undefined || query.predicate !== undefined || query.object !== undefined) {
+        const subjects = query.subject !== undefined ? resolve(query.subject) : [undefined];
+        const objects = query.object !== undefined ? resolve(query.object) : [undefined];
+        for (const subject of subjects) {
+          for (const object of objects) {
+            relations.push(...store.queryRelations({ subject, predicate: query.predicate, object, limit: query.limit }));
+          }
+        }
+      }
+      const ids = [
+        ...relations.flatMap((t) => [t.subject, t.object]),
+        ...pageApis.flatMap((u) => [u.page, u.endpoint]),
+        ...relatedPages.map((r) => r.page),
+      ];
+      for (const id of new Set(ids)) if (!entities[id]) note(store.getEntity(id));
+      return { entities, relations, pageApis, relatedPages };
     });
   }
 
@@ -272,6 +378,12 @@ export class TacetWorkspace {
 
   impact(): ImpactAnalyzer {
     return new ImpactAnalyzer(this.model());
+  }
+
+  /** Pages, components, functions, APIs, controllers and DTOs, and how they connect (subject–predicate–object). */
+  ontology(options: OntologyQueryOptions = {}): Ontology {
+    const ontology = buildOntology(this.model(), options);
+    return options.focus ? focusOntology(ontology, options.focus, options.depth) : ontology;
   }
 
   /** Converts user-supplied paths (cwd-relative, absolute or root-relative) to index paths. */

@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   Node,
   Project,
@@ -8,6 +8,7 @@ import {
   type CallExpression,
   type ElementAccessExpression,
   type PropertyAccessExpression,
+  type ResolutionHost,
   type SourceFile,
 } from "ts-morph";
 import {
@@ -21,11 +22,29 @@ import {
 } from "@tacet-api/core";
 import {
   DataFlowAnalyzer,
+  isBody,
   isFunctionLike,
   nodeLocation,
+  resolveFunctionNode,
   type FunctionLike,
   type TrackedValue,
 } from "./analyzer.js";
+import { extractRoutes } from "./routes.js";
+import {
+  VUE_RENDER,
+  vueComponentFunctionId,
+  vueComponentName,
+  vueDisplayCode,
+  vueToTypeScript,
+  vueVirtualPath,
+} from "./vue.js";
+
+/** In-memory TypeScript files generated from .vue files (see vue.ts). */
+const vueSourceFiles = new WeakSet<SourceFile>();
+
+export function isVueSourceFile(sf: SourceFile): boolean {
+  return vueSourceFiles.has(sf);
+}
 
 const MAX_CODE_LENGTH = 200;
 
@@ -70,6 +89,11 @@ export class TypeScriptProject {
   refresh(paths: string[]): void {
     for (const path of paths) {
       const absolute = isAbsolute(path) ? path : join(this.root, path);
+      if (absolute.endsWith(".vue")) {
+        if (existsSync(absolute)) addVueFile(this.project, absolute);
+        else this.project.getSourceFile(vueVirtualPath(absolute))?.delete();
+        continue;
+      }
       const existing = this.project.getSourceFile(absolute);
       if (!existsSync(absolute)) {
         if (existing) this.project.removeSourceFile(existing);
@@ -87,7 +111,12 @@ export class TypeScriptProject {
 }
 
 function extractFrom(root: string, files: SourceFile[], config: TacetConfig): FrontendManifest {
-  const rel = (sf: SourceFile): string => relative(root, sf.getFilePath()).split(sep).join("/");
+  const rel = (sf: SourceFile): string => {
+    const path = sf.getFilePath();
+    // A .vue file is analyzed as an in-memory `X.vue.ts`; report it as the .vue file.
+    const shown = vueSourceFiles.has(sf) ? path.slice(0, -3) : path;
+    return relative(root, shown).split(sep).join("/");
+  };
 
   const locationOf = (node: Node): SourceLocation => ({
     file: rel(node.getSourceFile()),
@@ -105,10 +134,22 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
   };
   const functionIdOf = (node: Node): string | null => {
     const fn = isFunctionLike(node) ? node : node.getFirstAncestor(isFunctionLike);
-    return fn ? idOf("fn", fn) : null;
+    if (fn) return idOf("fn", fn);
+    // Module-level code of a .vue file (script setup, template) belongs to the component.
+    return vueSourceFiles.has(node.getSourceFile()) ? vueComponentFunctionId(rel(node.getSourceFile())) : null;
+  };
+  /** The component a value passed to `__tacetRender` refers to: a Vue component or a function component. */
+  const renderedComponentId = (expr: Node | undefined): string | null => {
+    if (!expr) return null;
+    const fn = resolveFunctionNode(expr);
+    if (fn) return idOf("fn", fn);
+    const symbol = expr.getSymbol();
+    const decl = (symbol?.isAlias() ? symbol.getAliasedSymbol() ?? symbol : symbol)?.getDeclarations()[0];
+    const sf = decl?.getSourceFile();
+    return sf && vueSourceFiles.has(sf) ? vueComponentFunctionId(rel(sf)) : null;
   };
 
-  const analyzer = new DataFlowAnalyzer(config, callIdOf);
+  const analyzer = new DataFlowAnalyzer(config, callIdOf, loadEnv(root, config));
   analyzer.propagate(files);
 
   const manifest: FrontendManifest = {
@@ -119,6 +160,7 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
     functions: [],
     apiCalls: [],
     propertyAccesses: [],
+    routes: [],
   };
   const accesses = new Map<string, PropertyAccessInfo>();
   const recordAccess = (node: Node, value: TrackedValue, object: string, code: string): void => {
@@ -134,6 +176,7 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
       containingFunctionId: functionIdOf(node),
       containingComponent: componentOf(node),
       code: truncate(code),
+      ...fallbackGroupOf(node, idOf),
     });
   };
 
@@ -141,13 +184,27 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
     manifest.files.push(fileInfo(file, rel, locationOf));
 
     const callsByFunction = new Map<string, Set<string>>();
+    const invokesByFunction = new Map<string, Set<string>>();
+    const rendersByFunction = new Map<string, Set<string>>();
+    const addTo = (map: Map<string, Set<string>>, owner: string, value: string): void => {
+      (map.get(owner) ?? map.set(owner, new Set()).get(owner)!).add(value);
+    };
     file.forEachDescendant((node) => {
-      if (Node.isCallExpression(node)) {
+      if (Node.isJsxOpeningElement(node) || Node.isJsxSelfClosingElement(node)) {
+        const owner = functionIdOf(node);
+        const component = resolveFunctionNode(node.getTagNameNode());
+        if (owner && component) addTo(rendersByFunction, owner, idOf("fn", component));
+      }
+      if (Node.isCallExpression(node) && node.getExpression().getText() === VUE_RENDER) {
+        const owner = functionIdOf(node);
+        const component = renderedComponentId(node.getArguments()[0]);
+        if (owner && component) addTo(rendersByFunction, owner, component);
+      } else if (Node.isCallExpression(node)) {
         const owner = functionIdOf(node);
         if (owner) {
-          const set = callsByFunction.get(owner) ?? new Set<string>();
-          set.add(truncate(node.getExpression().getText()));
-          callsByFunction.set(owner, set);
+          addTo(callsByFunction, owner, truncate(node.getExpression().getText()));
+          const callee = resolveFunctionNode(node.getExpression());
+          if (callee) addTo(invokesByFunction, owner, idOf("fn", callee));
         }
         const target = analyzer.classifyCall(node);
         if (target) {
@@ -177,7 +234,7 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
             ? (node as PropertyAccessExpression | ElementAccessExpression).getExpression()
             : node;
         const value = analyzer.evaluate(target);
-        if (value?.kind === "body" && value.path.length > 0) {
+        if (isBody(value) && value.path.length > 0) {
           recordAccess(target, value, memberRoot(target).getText(), target.getText());
         }
       }
@@ -197,6 +254,26 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
         calls: [...(callsByFunction.get(id) ?? [])],
         location: locationOf(fn),
         containingComponent: componentOf(fn),
+        parentId: functionIdOf(fn.getParentOrThrow()),
+        invokes: [...(invokesByFunction.get(id) ?? [])].filter((target) => target !== id),
+        renders: [...(rendersByFunction.get(id) ?? [])],
+      });
+    }
+    if (vueSourceFiles.has(file)) {
+      const id = vueComponentFunctionId(rel(file));
+      const name = vueComponentName(file.getFilePath());
+      manifest.functions.push({
+        id,
+        name,
+        file: rel(file),
+        params: [],
+        returnType: null,
+        calls: [...(callsByFunction.get(id) ?? [])],
+        location: { file: rel(file), line: 1, column: 1 },
+        containingComponent: name,
+        parentId: null,
+        invokes: [...(invokesByFunction.get(id) ?? [])],
+        renders: [...(rendersByFunction.get(id) ?? [])].filter((target) => target !== id),
       });
     }
   }
@@ -204,6 +281,19 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
   for (const access of analyzer.recordedDestructuringAccesses) {
     recordAccess(access.node, access.value, access.object, firstLine(access.code));
   }
+
+  manifest.routes = extractRoutes({
+    root,
+    files,
+    config,
+    rel,
+    locationOf,
+    functionId: (fn) => idOf("fn", fn),
+    functionName,
+    isComponent,
+    vueComponent: (sf) =>
+      vueSourceFiles.has(sf) ? { id: vueComponentFunctionId(rel(sf)), name: vueComponentName(sf.getFilePath()) } : null,
+  });
 
   const apiCallIds = new Set(manifest.apiCalls.map((c) => c.id));
   manifest.propertyAccesses = [...accesses.values()]
@@ -217,6 +307,39 @@ function extractFrom(root: string, files: SourceFile[], config: TacetConfig): Fr
 }
 
 function loadProject(root: string): Project {
+  const project = loadTypeScriptProject(root);
+  for (const vueFile of findFiles(root, (name) => name.endsWith(".vue"))) addVueFile(project, vueFile);
+  return project;
+}
+
+/** Vue single-file components are analyzed as generated TypeScript (see vue.ts). */
+function addVueFile(project: Project, vuePath: string): void {
+  const code = vueToTypeScript(readFileSync(vuePath, "utf8"));
+  vueSourceFiles.add(project.createSourceFile(vueVirtualPath(vuePath), code, { overwrite: true }));
+}
+
+function findFiles(root: string, match: (name: string) => boolean): string[] {
+  const found: string[] = [];
+  const visit = (dir: string) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name)) visit(join(dir, entry.name));
+      } else if (match(entry.name)) {
+        found.push(join(dir, entry.name));
+      }
+    }
+  };
+  visit(root);
+  return found.sort();
+}
+
+function loadTypeScriptProject(root: string): Project {
   const tsConfigFilePath = join(root, "tsconfig.json");
   if (existsSync(tsConfigFilePath)) return new Project({ tsConfigFilePath });
   const project = new Project({
@@ -227,13 +350,171 @@ function loadProject(root: string): Project {
       module: ts.ModuleKind.ESNext,
       target: ts.ScriptTarget.ES2022,
     },
+    resolutionHost: (host, getCompilerOptions) => nearestTsconfigResolution(root, host, getCompilerOptions),
   });
   project.addSourceFilesAtPaths([`${root}/**/*.{ts,tsx}`, `!${root}/**/node_modules/**`]);
   return project;
 }
 
+const NESTED_TSCONFIG_NAMES = ["tsconfig.json", "tsconfig.base.json"];
+
+/**
+ * Monorepos (Nx, pnpm workspaces) often have no root tsconfig.json; each package declares its own `paths`
+ * (`@shared-api` → `../../libs/shared/api/src`). Resolve every import with the `paths`/`baseUrl` of the
+ * tsconfig nearest to the importing file, so an alias means what it means in that package.
+ */
+function nearestTsconfigResolution(
+  root: string,
+  host: ts.ModuleResolutionHost,
+  getCompilerOptions: () => ts.CompilerOptions,
+): ResolutionHost {
+  const optionsByDir = new Map<string, ts.CompilerOptions | null>();
+  const parseHost: ts.ParseConfigFileHost = { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} };
+
+  const tsconfigOptions = (dir: string): ts.CompilerOptions | null => {
+    if (optionsByDir.has(dir)) return optionsByDir.get(dir)!;
+    let options: ts.CompilerOptions | null = null;
+    const configPath = NESTED_TSCONFIG_NAMES.map((name) => join(dir, name)).find((p) => existsSync(p));
+    if (configPath) {
+      const parsed = ts.getParsedCommandLineOfConfigFile(configPath, {}, parseHost);
+      if (parsed?.options.paths || parsed?.options.baseUrl) {
+        const { baseUrl, paths, pathsBasePath } = parsed.options;
+        options = { baseUrl, paths, pathsBasePath };
+      }
+    }
+    if (!options) {
+      const parent = dirname(dir);
+      options = dir !== root && parent !== dir && !relative(root, parent).startsWith("..") ? tsconfigOptions(parent) : null;
+    }
+    optionsByDir.set(dir, options);
+    return options;
+  };
+
+  let packages: Map<string, WorkspacePackage> | undefined;
+  const resolveWorkspaceImport = (name: string, containingFile: string, options: ts.CompilerOptions) => {
+    packages ??= workspacePackages(root);
+    const match = [...packages.values()].find((p) => name === p.name || name.startsWith(`${p.name}/`));
+    if (!match) return undefined;
+    const subpath = name.slice(match.name.length + 1);
+    const candidates = subpath ? [subpath] : [...match.entries, "src/index", "index"];
+    for (const candidate of candidates) {
+      const target = join(match.dir, candidate.replace(/\.(d\.)?[cm]?[jt]sx?$/, ""));
+      const resolved = ts.resolveModuleName(target, containingFile, options, host).resolvedModule;
+      if (resolved) return resolved;
+    }
+    return undefined;
+  };
+
+  return {
+    resolveModuleNames: (moduleNames, containingFile) => {
+      const options = { ...getCompilerOptions(), ...tsconfigOptions(dirname(containingFile)) };
+      return moduleNames.map(
+        (name) =>
+          ts.resolveModuleName(name, containingFile, options, host).resolvedModule ??
+          resolveWorkspaceImport(name, containingFile, options),
+      );
+    },
+  };
+}
+
+interface WorkspacePackage {
+  name: string;
+  dir: string;
+  /** `types`/`main`/`module` entries from package.json, tried in order. */
+  entries: string[];
+}
+
+const SKIPPED_DIRS = new Set(["node_modules", "dist", "build", "coverage", "tmp"]);
+
+/**
+ * Packages of a pnpm/npm/yarn workspace (`"@shared-api": "workspace:*"`), found by their package.json, so
+ * imports between them resolve to source even when node_modules is not installed (e.g. in CI).
+ */
+function workspacePackages(root: string): Map<string, WorkspacePackage> {
+  const packages = new Map<string, WorkspacePackage>();
+  for (const file of findFiles(root, (name) => name === "package.json")) {
+    const dir = dirname(file);
+    if (dir === root) continue;
+    try {
+      const pkg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      if (typeof pkg.name !== "string" || packages.has(pkg.name)) continue;
+      const fields = [pkg.types, pkg.typings, pkg.module, pkg.main];
+      packages.set(pkg.name, {
+        name: pkg.name,
+        dir,
+        entries: fields.filter((f): f is string => typeof f === "string"),
+      });
+    } catch {
+      // not a usable package.json
+    }
+  }
+  return packages;
+}
+
+/** `envFiles` (dotenv, relative to the frontend root) in order, then `env`. */
+function loadEnv(root: string, config: TacetConfig): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const file of config.envFiles ?? []) {
+    const path = isAbsolute(file) ? file : join(root, file);
+    if (!existsSync(path)) throw new Error(`Env file not found: ${path}`);
+    Object.assign(env, parseDotenv(readFileSync(path, "utf8")));
+  }
+  return { ...env, ...config.env };
+}
+
+function parseDotenv(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.*?)\s*$/);
+    if (!match) continue;
+    let value = match[2];
+    const quoted = value.match(/^(["'`])(.*)\1$/);
+    value = quoted ? quoted[2] : value.replace(/\s+#.*$/, "");
+    env[match[1]] = value;
+  }
+  return env;
+}
+
+/**
+ * The outermost `??` / `||` chain a read is an operand of, looking through parentheses, casts and one
+ * wrapping call (`num(a.memoryGb) ?? num(a.memory_gb)`).
+ */
+function fallbackGroupOf(
+  node: Node,
+  idOf: (prefix: string, node: Node) => string,
+): { fallbackGroup: string } | Record<string, never> {
+  let current = node;
+  let chain: Node | null = null;
+  let crossedCall = false;
+  for (;;) {
+    const parent = current.getParent();
+    if (!parent) break;
+    if (
+      Node.isParenthesizedExpression(parent) ||
+      Node.isAsExpression(parent) ||
+      Node.isNonNullExpression(parent) ||
+      Node.isSatisfiesExpression(parent)
+    ) {
+      current = parent;
+    } else if (Node.isCallExpression(parent) && !crossedCall && parent.getArguments().includes(current)) {
+      crossedCall = true;
+      current = parent;
+    } else if (
+      Node.isBinaryExpression(parent) &&
+      [SyntaxKind.QuestionQuestionToken, SyntaxKind.BarBarToken].includes(parent.getOperatorToken().getKind())
+    ) {
+      chain = parent;
+      crossedCall = false;
+      current = parent;
+    } else {
+      break;
+    }
+  }
+  return chain ? { fallbackGroup: idOf("fallback", chain) } : {};
+}
+
 function isSourcePath(path: string): boolean {
-  return /\.tsx?$/.test(path) && !path.endsWith(".d.ts") && !path.includes(`${sep}node_modules${sep}`);
+  return /\.(tsx?|vue)$/.test(path) && !path.endsWith(".d.ts") && !path.includes(`${sep}node_modules${sep}`);
 }
 
 function sourceFiles(project: Project): SourceFile[] {
@@ -318,7 +599,8 @@ function componentOf(node: Node): string | null {
     if (isComponent(fn)) return functionName(fn);
     fn = fn.getFirstAncestor(isFunctionLike);
   }
-  return null;
+  const file = node.getSourceFile();
+  return vueSourceFiles.has(file) ? vueComponentName(file.getFilePath()) : null;
 }
 
 function boundVariableType(call: CallExpression): string | null {
@@ -337,6 +619,6 @@ function firstLine(text: string): string {
 }
 
 function truncate(text: string): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
+  const oneLine = vueDisplayCode(text).replace(/\s+/g, " ").trim();
   return oneLine.length > MAX_CODE_LENGTH ? `${oneLine.slice(0, MAX_CODE_LENGTH - 1)}…` : oneLine;
 }

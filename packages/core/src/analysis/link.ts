@@ -70,9 +70,23 @@ export class EndpointLinker {
 
   private frontendPath(pattern: string): string {
     const base = this.linking.frontendBasePath ? normalizePath(this.linking.frontendBasePath) : "";
-    if (!base || base === "/" || pattern === base || pattern.startsWith(`${base}/`)) return pattern;
-    return joinPath(base, pattern);
+    const path = !base || base === "/" || hasPrefix(pattern, base) ? pattern : joinPath(base, pattern);
+    return this.rewrite(path);
   }
+
+  private rewrite(path: string): string {
+    const rewrites = Object.entries(this.linking.pathRewrites ?? {})
+      .map(([from, to]) => [normalizePath(from), to] as const)
+      .sort((a, b) => b[0].length - a[0].length);
+    for (const [from, to] of rewrites) {
+      if (from !== "/" && hasPrefix(path, from)) return normalizePath(`${to}/${path.slice(from.length)}`);
+    }
+    return path;
+  }
+}
+
+function hasPrefix(path: string, prefix: string): boolean {
+  return path === prefix || path.startsWith(`${prefix}/`);
 }
 
 function segmentsOf(path: string): string[] {
