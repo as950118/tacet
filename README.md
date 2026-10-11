@@ -366,6 +366,7 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
   "envFiles": ["apps/admin-web/.env"],
   "env": { "VITE_API_PREFIX": "/api/admin" },
   "commonApis": { "share": 0.25, "minPages": 8, "include": [], "exclude": [] },
+  "requestHelpers": { "callApiWithConvertedUrl": { "instance": 0, "method": 1, "url": 2 } },
   "routes": { "/users/:id": "src/pages/User.tsx#UserPage" }
 }
 ```
@@ -377,6 +378,8 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
   `minPages`(기본 8) 이상 페이지가 쓰는 API가 공통이고, `include`/`exclude`(예: `"GET /admin/v1/auth"`)로 강제할 수 있다.
   index DB·CLI·MCP가 이 기준을 쓴다. HTML 탐색기 상단의 "Common APIs" 패널에서는 비율·최소 페이지 수·API별 공통 여부를
   개인 설정으로 바꿀 수 있고, 이 설정은 그 브라우저에만 저장된다(localStorage, 프로젝트별).
+- `requestHelpers`: 인스턴스·메서드·URL을 인자로 받는 범용 요청 함수. 예: `callApi(awsApiInstance, "get", "/vpcs")` →
+  `{ "callApi": { "instance": 0, "method": 1, "url": 2 } }`(0부터 센 인자 위치, `method`는 고정 메서드 문자열도 가능).
 - `envFiles` / `env`: axios `baseURL`에 쓰이는 build-time 환경변수(`import.meta.env.X`, `process.env.X`). `envFiles`는
   frontend root 기준 dotenv 파일이고 `env`가 우선한다. 같은 코드를 여러 앱(예: admin/user)으로 빌드하면 앱별 config로
   각각 검사한다.

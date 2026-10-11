@@ -4,6 +4,7 @@ import {
   type ApiCallResolution,
   type TacetConfig,
   type DataFlowKind,
+  type RequestHelperConfig,
   type HttpMethod,
   type RequestShape,
 } from "@tacet-api/core";
@@ -532,6 +533,9 @@ export class DataFlowAnalyzer {
       };
     }
 
+    const helper = key ? this.config.requestHelpers?.[key] : undefined;
+    if (helper) return this.requestHelperTarget(helper, args);
+
     if (Node.isPropertyAccessExpression(callee) && AXIOS_METHODS.has(callee.getName())) {
       if (isAxiosInstance(callee.getExpression())) {
         const baseUrl = axiosBaseUrl(callee.getExpression(), this.envVars);
@@ -583,6 +587,28 @@ export class DataFlowAnalyzer {
       };
     }
     return null;
+  }
+
+  /** A call to a configured request helper: method, URL and (optionally) the instance come from its arguments. */
+  private requestHelperTarget(helper: RequestHelperConfig, args: Node[]): ApiCallTarget {
+    const instance = helper.instance !== undefined ? args[helper.instance] : undefined;
+    const baseUrl = instance ? axiosBaseUrl(unwrap(instance), this.envVars) : null;
+    const methodArg = typeof helper.method === "number" ? args[helper.method] : undefined;
+    const methodText = typeof helper.method === "string" ? helper.method : methodArg ? resolveStaticString(methodArg, this.envVars) : null;
+    const urlArg = args[helper.url];
+    return {
+      endpoint: {
+        pattern: urlArg ? resolveEndpointExpression(urlArg, baseUrl, this.envVars) : null,
+        method: methodText ? (methodText.toUpperCase() as HttpMethod) : null,
+      },
+      baseUrl,
+      request: UNKNOWN_REQUEST,
+      wrapper: null,
+      resolution: "config",
+      resultKind: "envelope",
+      resultPath: [],
+      flow: "direct",
+    };
   }
 
   /** A function is an API wrapper when one of its return values is traceable to an API call. */
@@ -735,10 +761,16 @@ function createsAxiosInstance(expr: Node | undefined, seen: Set<Node>): boolean 
   if (Node.isIdentifier(e)) return isAxiosInstance(e, seen);
   if (!Node.isCallExpression(e)) return false;
   if (e.getExpression().getText() === "axios.create") return true;
-  const fn = resolveFunctionNode(e.getExpression());
+  const fn = calledFunction(e);
   if (!fn || seen.has(fn)) return false;
   seen.add(fn);
   return returnExpressions(fn).some((ret) => createsAxiosInstance(ret, seen));
+}
+
+/** The project function a call invokes: a named one, or an inline one called right away (IIFE). */
+function calledFunction(call: CallExpression): FunctionLike | null {
+  const callee = unwrap(call.getExpression());
+  return isFunctionLike(callee) ? callee : resolveFunctionNode(callee);
 }
 
 /**
@@ -768,7 +800,7 @@ function creationBaseUrl(expr: Node | undefined, env: Record<string, string>, se
     if (Node.isShorthandPropertyAssignment(prop)) return resolveStaticString(prop, env);
   }
   if (e.getExpression().getText() === "axios.create") return null;
-  const fn = resolveFunctionNode(e.getExpression());
+  const fn = calledFunction(e);
   if (!fn || seen.has(fn)) return null;
   seen.add(fn);
   for (const ret of returnExpressions(fn)) {
