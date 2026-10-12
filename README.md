@@ -250,6 +250,11 @@ endpoint마다 호출자를 모아 분류한다.
 (`Path` predicate에 `RewritePath`/`StripPrefix`/`PrefixPath`를 적용, `{userType:admin|user}` 같은 경로변수 제약 반영)도
 함께 나온다. 라우트가 닿지 않는 미사용 endpoint는 외부에서 부를 수 없으니 내부 전용이거나 이 저장소 밖에서 호출된다.
 
+HTML 탐색기(`tacet ontology`)의 **Unused APIs** 탭에서도 볼 수 있다. 상단 막대가 프론트 사용 / 서비스 전용 / 미사용 비율이고
+(누르면 그 종류만), 왼쪽은 경로(`/inventory` → `/inventory/aws` …)나 컨트롤러별 미사용 개수와 막대, 오른쪽은 컨트롤러로 묶은
+endpoint 목록(다른 method 사용 여부, gateway 미노출, 호출하는 Feign client)이다. 다른 frontend index도 합치려면
+`tacet -i admin.db ontology --also user.db`.
+
 삭제 후보 목록이지 삭제해도 된다는 판정은 아니다. 분석한 코드 밖의 호출자(다른 저장소, 배치, 외부 시스템, URL을 직접
 조립하는 RestTemplate/WebClient)와 URL을 정적으로 알 수 없는 frontend 호출은 보이지 않는다(보고서에 개수가 나온다).
 운영 접근 로그와 교차 확인할 것.
