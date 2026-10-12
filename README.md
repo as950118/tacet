@@ -126,7 +126,8 @@ node packages/cli/dist/bin.js extract-backend ./backend      # -o backend.json �
 
 Endpoint(method, path, handler, path/query/header 파라미터, request body, response 타입)와 DTO의 JSON 필드
 (상속, record, getter, `@JsonProperty`, `@JsonIgnore`, `@JsonNaming`, nullable, enum, `Page<T>`)를 추출한다.
-backend를 빌드하지 않고 소스만 읽는다.
+backend를 빌드하지 않고 소스만 읽는다. 서비스 간 호출(`@FeignClient`, `@HttpExchange` client), Spring Cloud Gateway
+라우트(`spring.cloud.gateway.routes`), `server.servlet.context-path`도 함께 읽는다(아래 4-3).
 
 ### 3. Contract check — frontend가 실제 API와 맞는가
 
@@ -228,6 +229,31 @@ SELECT s.label, s.file FROM relations r JOIN entities s ON s.id = r.subject JOIN
 WHERE r.predicate = 'renders' AND o.label = 'UserCard';
 ```
 
+### 4-3. 미사용 API — 아무도 부르지 않는 endpoint
+
+```bash
+tacet unused                                   # 이 index의 frontend 기준
+tacet -i admin.db unused --also user.db        # 같은 backend를 쓰는 frontend가 여럿이면 함께 (admin 앱 + user 앱)
+tacet unused -f markdown -o unused.md          # 컨트롤러별 보고서 / -f csv (--all: 사용 중인 것까지) / -f json
+```
+
+endpoint마다 호출자를 모아 분류한다.
+
+| usage | 의미 |
+|---|---|
+| `frontend` | frontend가 호출한다 |
+| `service` | 다른 backend 서비스가 Feign / `@HttpExchange` client로 호출한다 (`/api/user/v1/iam/users/ids` → context path `/api`를 빼고 연결) |
+| `client-declared` | client 메서드는 있지만 그 메서드를 부르는 코드가 없다 |
+| `unused` | 호출자를 찾지 못했다 |
+
+같은 path의 다른 method가 쓰이는지(`GET`은 쓰고 `DELETE`는 안 씀), gateway 라우트가 이 endpoint까지 닿는지
+(`Path` predicate에 `RewritePath`/`StripPrefix`/`PrefixPath`를 적용, `{userType:admin|user}` 같은 경로변수 제약 반영)도
+함께 나온다. 라우트가 닿지 않는 미사용 endpoint는 외부에서 부를 수 없으니 내부 전용이거나 이 저장소 밖에서 호출된다.
+
+삭제 후보 목록이지 삭제해도 된다는 판정은 아니다. 분석한 코드 밖의 호출자(다른 저장소, 배치, 외부 시스템, URL을 직접
+조립하는 RestTemplate/WebClient)와 URL을 정적으로 알 수 없는 frontend 호출은 보이지 않는다(보고서에 개수가 나온다).
+운영 접근 로그와 교차 확인할 것.
+
 ### 5. Backend API 변경 → Frontend 영향
 
 ```bash
@@ -309,7 +335,7 @@ PR 코멘트(갱신)로 남기고, 기준 이상이면 job을 실패시킨다. �
 
 같은 기능을 MCP tool로 제공한다. tool: `index_frontend`, `extract_backend`, `check_contract`,
 `analyze_api_changes`, `diff_api_changes`, `verify_api_changes`, `impact_of_api`,
-`impact_of_file`, `impact_of_field`, `search`, `impact_summary`, `render_graph`, `page_apis`, `ontology`.
+`impact_of_file`, `impact_of_field`, `search`, `impact_summary`, `render_graph`, `page_apis`, `relations`, `unused_apis`, `ontology`.
 
 **독립 MCP 서버 (stdio)** — Claude Desktop / Claude Code 등에 바로 연결:
 

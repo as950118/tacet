@@ -33,6 +33,7 @@ const TOOL_NAMES = [
   "relations",
   "render_graph",
   "search",
+  "unused_apis",
   "verify_api_changes",
 ];
 
@@ -53,7 +54,7 @@ describe("createTacetTools", () => {
     const tools = createTacetTools();
     expect(tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES);
     const readOnly = tools.filter((t) => t.readOnly).map((t) => t.name).sort();
-    expect(readOnly).toEqual(["check_contract", "diff_api_changes", "impact_of_api", "impact_of_field", "impact_of_file", "impact_summary", "page_apis", "relations", "search", "verify_api_changes"]);
+    expect(readOnly).toEqual(["check_contract", "diff_api_changes", "impact_of_api", "impact_of_field", "impact_of_file", "impact_summary", "page_apis", "relations", "search", "unused_apis", "verify_api_changes"]);
     expect(tools.find((t) => t.name === "impact_of_api")!.parameters.parse({ api: "GET /x" })).toEqual({
       api: "GET /x",
       graph: "none",
@@ -113,6 +114,9 @@ describe("createTacetTools", () => {
     const ontology = (await tools.ontology.run({ focus: "UserPage", format: "mermaid" })) as { mermaid: string };
     expect(ontology.mermaid).toContain("|showsComponent|");
     expect(await tools.ontology.run({ focus: "nothing-like-this" })).toMatchObject({ error: expect.stringContaining("No entity") });
+
+    const unused = (await tools.unused_apis.run({})) as { endpoints: { endpoint: string; usage: string }[] };
+    expect(unused.endpoints.every((e) => e.usage === "unused" || e.usage === "client-declared")).toBe(true);
   });
 });
 

@@ -217,6 +217,16 @@ class Tacet:
                 args += [flag, str(value)]
         return self._run(args)
 
+    def unused_apis(self, *, also: list[str] | None = None, all: bool = False) -> dict[str, Any]:
+        """Backend endpoints nothing calls: not this index's frontend (nor those of the `also` index databases), nor
+        another backend service through a Feign / @HttpExchange client. `all` returns every endpoint with its usage."""
+        args = ["unused", "--format", "json"]
+        if also:
+            args += ["--also", *also]
+        if all:
+            args.append("--all")
+        return self._run(args)
+
     def impact_of_field(self, field: str, *, graph: GraphMode = "none") -> list[dict[str, Any]]:
         """Every endpoint returning a DTO field (e.g. "UserResponse.name") and every frontend read of it."""
         return self._run(["impact", "--field", field, "--format", "json", "--graph", graph])

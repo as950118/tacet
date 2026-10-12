@@ -11,6 +11,8 @@ import {
   renderOntologyTurtle,
   renderChangeReportMarkdown,
   renderContractReportMarkdown,
+  renderUsageCsv,
+  renderUsageMarkdown,
   type ChangeReport,
   type ContractReport,
   type VerifiedChangeReport,
@@ -28,6 +30,7 @@ import {
   formatOntology,
   formatSearch,
   formatSummary,
+  formatUsage,
 } from "./format.js";
 import type { Effort } from "@tacet-api/ai-anthropic";
 import { AI_PROVIDERS, createAiProvider } from "./ai.js";
@@ -36,7 +39,7 @@ import { TacetWorkspace, DEFAULT_INDEX_PATH, type RelationsResult } from "./work
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
-type Format = "text" | "json" | "mermaid" | "html" | "markdown" | "turtle";
+type Format = "text" | "json" | "mermaid" | "html" | "markdown" | "turtle" | "csv";
 type ImpactFailOn = "definite" | "likely" | "possible" | "never";
 type FailOn = "error" | "warning" | "never";
 
@@ -235,6 +238,35 @@ export function buildProgram(): Command {
       }
       const result = workspace().relations(opts);
       emit(opts.format === "json" ? JSON.stringify(result, null, 2) : formatRelations(result));
+    });
+
+  program
+    .command("unused")
+    .description(
+      "Find backend endpoints nothing calls: not the frontend of this index (nor of --also indexes), " +
+        "nor a backend service through a Feign / @HttpExchange client",
+    )
+    .option("--also <indexes...>", "index databases of other frontends using the same backend (e.g. an admin and a user app)")
+    .option("--all", "with csv / json: every endpoint, not only the unused ones")
+    .addOption(formatOption(["text", "markdown", "csv", "json"], "text"))
+    .option("-o, --out <path>", "write the report to a file")
+    .action((opts: { also?: string[]; all?: boolean; format: Format; out?: string }) => {
+      const report = workspace().usage(opts.also);
+      const json = () =>
+        JSON.stringify(
+          opts.all ? report : { ...report, endpoints: report.endpoints.filter((e) => e.usage === "unused" || e.usage === "client-declared") },
+          null,
+          2,
+        );
+      const output =
+        opts.format === "json"
+          ? json()
+          : opts.format === "csv"
+            ? renderUsageCsv(report, { all: opts.all })
+            : opts.format === "markdown"
+              ? renderUsageMarkdown(report)
+              : formatUsage(report);
+      emit(output, opts.out);
     });
 
   const impactFailOn = () =>

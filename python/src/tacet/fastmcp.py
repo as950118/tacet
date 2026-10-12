@@ -113,6 +113,12 @@ def register_tools(mcp: Any, lens: Tacet | None = None, *, prefix: str = "", **l
         handledBy, accepts, returns, hasField, typedAs, definedIn, usesApi). Entities by id or exact label."""
         return lens.relations(page=page, api=api, subject=subject, predicate=predicate, object=object, limit=limit)
 
+    def unused_apis(also: list[str] | None = None, all: bool = False) -> dict[str, Any]:
+        """Backend endpoints nothing calls: not the indexed frontend (nor those of the `also` index databases), nor
+        another backend service through a Feign / @HttpExchange client, with callers, other methods used on the same
+        path, and the gateway routes reaching each one. Callers outside the analyzed code are not seen."""
+        return lens.unused_apis(also=also, all=all)
+
     def ontology(
         focus: str | None = None,
         depth: int = 2,
@@ -140,6 +146,7 @@ def register_tools(mcp: Any, lens: Tacet | None = None, *, prefix: str = "", **l
         (render_graph, False),
         (page_apis, True),
         (relations, True),
+        (unused_apis, True),
         (ontology, True),
     ]
     names = []

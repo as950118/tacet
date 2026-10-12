@@ -7,3 +7,5 @@ export * from "./impact.js";
 export * from "./diff.js";
 export * from "./change-impact.js";
 export * from "./ontology.js";
+export * from "./gateway.js";
+export * from "./usage.js";

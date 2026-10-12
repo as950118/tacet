@@ -75,6 +75,13 @@ describe("EndpointLinker", () => {
     expect(gateway.link(call("c", "GET", "/api/v1/login")).endpointId).toBe("GET /v1/login");
     expect(gateway.link(call("c", "GET", "/apiv1/login")).status).toBe("not-found");
   });
+
+  it("matches catch-all handlers (`/**`) after every specific endpoint", () => {
+    const proxy = new EndpointLinker([endpoint("GET", "/auth/**", null), endpoint("GET", "/auth/me", null)]);
+    expect(proxy.link(call("c", "GET", "/auth/me")).endpointId).toBe("GET /auth/me");
+    expect(proxy.link(call("c", "GET", "/auth/token/refresh")).endpointId).toBe("GET /auth/**");
+    expect(proxy.link(call("c", "GET", "/other")).status).toBe("not-found");
+  });
 });
 
 describe("checkPath", () => {

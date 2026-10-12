@@ -1,5 +1,5 @@
 import type { LinkingConfig } from "../config.js";
-import type { ApiCallInfo, EndpointInfo } from "../ir/types.js";
+import type { ApiCallInfo, EndpointInfo, HttpMethod, ServiceCallInfo } from "../ir/types.js";
 import { joinPath, normalizePath, PARAM_PLACEHOLDER } from "../path.js";
 
 /**
@@ -11,6 +11,7 @@ import { joinPath, normalizePath, PARAM_PLACEHOLDER } from "../path.js";
 export type LinkStatus = "matched" | "method-mismatch" | "not-found" | "unresolved";
 
 export interface ApiLink {
+  /** The frontend API call (or backend service call) that was linked. */
   apiCallId: string;
   status: LinkStatus;
   endpointId: string | null;
@@ -38,16 +39,41 @@ export class EndpointLinker {
   }
 
   link(call: ApiCallInfo): ApiLink {
-    const base = { apiCallId: call.id, endpointId: null, candidates: [] };
-    if (call.endpointPattern === null || call.method === null) return { ...base, status: "unresolved" };
+    if (call.endpointPattern === null || call.method === null) {
+      return { apiCallId: call.id, endpointId: null, candidates: [], status: "unresolved" };
+    }
+    return this.match(call.id, call.method, this.frontendPath(call.endpointPattern));
+  }
 
-    const segments = segmentsOf(this.frontendPath(call.endpointPattern));
+  /**
+   * Links a request another backend service sends (a Feign / @HttpExchange client). Its path includes the
+   * target's servlet context path, so it is tried as declared and with each of `contextPaths` removed; the
+   * frontend's base path and gateway rewrites do not apply.
+   */
+  linkServiceCall(call: ServiceCallInfo, contextPaths: string[] = []): ApiLink {
+    const path = normalizePath(call.path);
+    const stripped = contextPaths
+      .map(normalizePath)
+      .filter((prefix) => prefix !== "/" && hasPrefix(path, prefix))
+      .map((prefix) => normalizePath(path.slice(prefix.length)));
+    let best: ApiLink | null = null;
+    for (const candidate of [path, ...stripped]) {
+      const link = this.match(call.id, call.method, candidate);
+      if (link.status === "matched") return link;
+      if (!best || (best.status === "not-found" && link.status === "method-mismatch")) best = link;
+    }
+    return best!;
+  }
+
+  private match(id: string, method: HttpMethod, path: string): ApiLink {
+    const base = { apiCallId: id, endpointId: null, candidates: [] };
+    const segments = segmentsOf(path);
     const scored = this.endpoints
       .map((e) => ({ ...e, score: pathScore(segments, e.segments) }))
       .filter((e) => e.score >= 0)
       .sort((a, b) => b.score - a.score);
 
-    const sameMethod = scored.filter((e) => e.endpoint.method === call.method);
+    const sameMethod = scored.filter((e) => e.endpoint.method === method);
     if (sameMethod.length > 0) {
       return { ...base, status: "matched", endpointId: sameMethod[0].endpoint.id };
     }
@@ -99,9 +125,12 @@ function segmentsOf(path: string): string[] {
  * weak, so `/users/${x}` prefers `/users/{id}` over `/users/search`.
  */
 function pathScore(frontend: string[], backend: string[]): number {
-  if (frontend.length !== backend.length) return -1;
+  // A trailing `**` (a catch-all handler, e.g. a proxy) matches the rest of the path, weaker than any exact match.
+  const catchAll = backend[backend.length - 1] === "**";
+  const fixed = catchAll ? backend.length - 1 : backend.length;
+  if (catchAll ? frontend.length < fixed : frontend.length !== backend.length) return -1;
   let score = 0;
-  for (let i = 0; i < frontend.length; i++) {
+  for (let i = 0; i < fixed; i++) {
     const fe = frontend[i];
     const be = backend[i];
     if (fe === be) score += 3;

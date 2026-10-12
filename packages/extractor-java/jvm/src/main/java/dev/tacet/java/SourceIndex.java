@@ -80,7 +80,11 @@ final class SourceIndex {
         return units;
     }
 
-    private boolean isExcluded(Path file) {
+    Path root() {
+        return root;
+    }
+
+    boolean isExcluded(Path file) {
         String rel = relative(file);
         if (rel.contains("src/test/")) return true;
         for (Path segment : root.relativize(file)) {

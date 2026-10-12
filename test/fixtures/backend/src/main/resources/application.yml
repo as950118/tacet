@@ -1,0 +1,8 @@
+server:
+  port: 8080
+  servlet:
+    context-path: ${CONTEXT_PATH:/api} # every endpoint is served under /api
+
+services:
+  user:
+    url: http://localhost:8080

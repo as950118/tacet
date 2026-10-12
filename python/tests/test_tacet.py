@@ -73,6 +73,8 @@ class TestWithBackend:
         assert lens.ontology(focus="UserCard", format="turtle").startswith("@prefix tacet:")
         stored = lens.relations(api="GET /users/{id}")
         assert any(stored["entities"][u["page"]]["label"] == "UserPage (page)" for u in stored["pageApis"])
+        unused = lens.unused_apis(all=True)
+        assert {e["usage"] for e in unused["endpoints"]} >= {"frontend"}
         ontology = lens.ontology(include_files=False)
         assert not any(e["class"] == "File" for e in ontology["entities"])
 
@@ -87,7 +89,7 @@ class TestWithBackend:
             return "ok"
 
         names = register_tools(mcp, lens, prefix="tacet_")
-        assert len(names) == 15
+        assert len(names) == 16
 
         async def run():
             async with fastmcp.Client(mcp) as client:

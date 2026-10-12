@@ -974,7 +974,7 @@ const SCRIPT = `
   }
   function sub(n) {
     if (n.class === "Endpoint") {
-      if (n.status === "unused") return "no frontend usage";
+      if (n.status === "unused") return n.attributes.serviceCallers ? "used by backend services only" : "no frontend usage";
       if (n.status && n.status !== "matched" && n.status !== "no-backend") return n.status.replace("-", " ");
       return (n.detail || "").split(".").pop();
     }

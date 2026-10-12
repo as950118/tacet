@@ -14,6 +14,7 @@ export const TABLES = [
   "endpoints",
   "dtos",
   "enums",
+  "service_calls",
 ] as const;
 
 /** Relation tables: the ontology derived from the facts above, rewritten whenever the facts change. */
@@ -35,6 +36,10 @@ CREATE TABLE IF NOT EXISTS endpoints (
   id TEXT PRIMARY KEY, file TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS dtos (id TEXT PRIMARY KEY, file TEXT NOT NULL, name TEXT NOT NULL, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS enums (id TEXT PRIMARY KEY, file TEXT NOT NULL, name TEXT NOT NULL, json TEXT NOT NULL);
+-- Requests the backend sends to other services (Feign / @HttpExchange clients). Added without a schema bump:
+-- an index from before simply has none until the backend is extracted again.
+CREATE TABLE IF NOT EXISTS service_calls (
+  id TEXT PRIMARY KEY, file TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, json TEXT NOT NULL);
 
 CREATE INDEX IF NOT EXISTS idx_functions_file ON functions(file);
 CREATE INDEX IF NOT EXISTS idx_api_calls_endpoint ON api_calls(method, endpoint_pattern);

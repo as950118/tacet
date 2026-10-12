@@ -220,6 +220,39 @@ export interface EndpointInfo {
   location: SourceLocation;
 }
 
+/** A request the backend sends to another service through a declarative client (@FeignClient, @HttpExchange). */
+export interface ServiceCallInfo {
+  /** `${handler} ${method} ${path}`. */
+  id: string;
+  /** The client interface, e.g. "com.example.client.UserServiceClient". */
+  client: string;
+  /** The client's url, or its service name when it has none, e.g. "${services.user.url}". */
+  target: string | null;
+  method: HttpMethod;
+  /** Path as declared on the client, including the target's context path, e.g. "/api/users/{id}". */
+  path: string;
+  /** e.g. "com.example.client.UserServiceClient#getUser". */
+  handler: string;
+  /** False when no code calls a method of this name: the client method is declared but never used. */
+  referenced: boolean;
+  location: SourceLocation;
+}
+
+/** A Spring Cloud Gateway route declared in configuration. */
+export interface GatewayRouteInfo {
+  id: string | null;
+  uri: string | null;
+  /** Path predicate patterns, e.g. "/api/console/admin/**". */
+  paths: string[];
+  /** RewritePath filters (Java regex and replacement), applied in order. */
+  rewrites: { regex: string; replacement: string }[];
+  /** StripPrefix filter: leading segments removed. */
+  stripPrefix: number;
+  /** PrefixPath filter. */
+  prefixPath: string | null;
+  location: SourceLocation;
+}
+
 export type BackendLanguage = "java";
 
 export interface BackendManifest {
@@ -230,6 +263,12 @@ export interface BackendManifest {
   /** DTOs reachable from endpoint requests/responses. */
   dtos: DtoInfo[];
   enums: EnumInfo[];
+  /** Requests to other services (absent in manifests from older extractors). */
+  serviceCalls?: ServiceCallInfo[];
+  /** Gateway routes found in the backend's configuration. */
+  gatewayRoutes?: GatewayRouteInfo[];
+  /** Servlet context paths (server.servlet.context-path), e.g. ["/api"]. */
+  contextPaths?: string[];
   /** Things the extractor could not analyze precisely (parse errors, unresolved constants, ...). */
   warnings: string[];
 }
