@@ -1,6 +1,6 @@
 {
   "name": "@tacet-api/ai-anthropic",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude provider for Tacet AI verification",
   "keywords": [
     "tacet",
@@ -10,14 +10,14 @@
   ],
   "license": "Apache-2.0",
   "author": "Heonjin Jeong",
-  "homepage": "https://github.com/heonjinjeong/tacet#readme",
+  "homepage": "https://github.com/as950118/tacet#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/heonjinjeong/tacet.git",
+    "url": "git+https://github.com/as950118/tacet.git",
     "directory": "packages/ai-anthropic"
   },
   "bugs": {
-    "url": "https://github.com/heonjinjeong/tacet/issues"
+    "url": "https://github.com/as950118/tacet/issues"
   },
   "type": "module",
   "main": "./dist/index.js",
@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
-    "@tacet-api/core": "^0.1.0",
+    "@tacet-api/core": "^0.1.1",
     "zod": "^4.1.13"
   }
 }

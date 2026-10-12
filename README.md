@@ -12,9 +12,9 @@ AI는 정적으로 확정할 수 없는 부분을 검증하는 데만 쓴다. �
 | CLI (npm) | `npm install -g @tacet-api/cli` → `tacet ...` |
 | MCP 서버 | `npx -y @tacet-api/mcp --frontend ... --backend ...` |
 | Node/TS 라이브러리 | `npm install @tacet-api/cli` (`TacetWorkspace`, `runCi`) / `@tacet-api/mcp` |
-| Python / FastMCP | `pip install "tacet[fastmcp]"` (import 이름 `tacet`) |
-| Gradle | `plugins { id("io.github.heonjinjeong.tacet") version "0.1.0" }` |
-| Maven | `io.github.heonjinjeong:tacet-maven-plugin:0.1.0` |
+| Python / FastMCP | `pip install "tacet-api[fastmcp]"` (import 이름 `tacet`) |
+| Gradle | `plugins { id("io.github.as950118.tacet") version "0.1.1" }` |
+| Maven | `io.github.as950118:tacet-maven-plugin:0.1.1` |
 
 모든 형태가 같은 CLI(`@tacet-api/cli`)를 실행한다. Python과 Gradle/Maven 플러그인은 `tacet`가 PATH에 없으면
 같은 버전을 `npx`로 자동 실행하므로, 실행 환경에 Node.js 22.13+(와 backend 분석용 Java 17+)만 있으면 된다.
@@ -22,7 +22,7 @@ AI는 정적으로 확정할 수 없는 부분을 검증하는 데만 쓴다. �
 ### Gradle
 
 ```kotlin
-plugins { id("io.github.heonjinjeong.tacet") version "0.1.0" }
+plugins { id("io.github.as950118.tacet") version "0.1.1" }
 
 tacet {
     frontendDir = file("../frontend")
@@ -41,9 +41,9 @@ tasks.check { dependsOn("tacetCheck") }
 
 ```xml
 <plugin>
-  <groupId>io.github.heonjinjeong</groupId>
+  <groupId>io.github.as950118</groupId>
   <artifactId>tacet-maven-plugin</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <executions><execution><goals><goal>check</goal></goals></execution></executions>
   <configuration>
     <frontendDir>${project.basedir}/../frontend</frontendDir>

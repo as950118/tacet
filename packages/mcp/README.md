@@ -1,6 +1,6 @@
 # @tacet-api/mcp
 
-[Tacet](https://github.com/heonjinjeong/tacet) as MCP tools: check a TypeScript frontend against a Spring Boot API,
+[Tacet](https://github.com/as950118/tacet) as MCP tools: check a TypeScript frontend against a Spring Boot API,
 and see what an API, file or field change would affect.
 
 **Standalone stdio server**

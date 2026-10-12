@@ -4,14 +4,14 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>io.github.heonjinjeong</groupId>
+  <groupId>io.github.as950118</groupId>
   <artifactId>tacet-maven-plugin</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <packaging>maven-plugin</packaging>
 
   <name>Tacet Maven Plugin</name>
   <description>Run Tacet in Maven builds: find frontend code broken by backend API changes and check frontend API usage</description>
-  <url>https://github.com/heonjinjeong/tacet</url>
+  <url>https://github.com/as950118/tacet</url>
   <licenses>
     <license>
       <name>Apache-2.0</name>
@@ -21,15 +21,15 @@
   </licenses>
   <developers>
     <developer>
-      <id>heonjinjeong</id>
+      <id>as950118</id>
       <name>Heonjin Jeong</name>
-      <url>https://github.com/heonjinjeong</url>
+      <url>https://github.com/as950118</url>
     </developer>
   </developers>
   <scm>
-    <url>https://github.com/heonjinjeong/tacet</url>
-    <connection>scm:git:https://github.com/heonjinjeong/tacet.git</connection>
-    <developerConnection>scm:git:ssh://git@github.com/heonjinjeong/tacet.git</developerConnection>
+    <url>https://github.com/as950118/tacet</url>
+    <connection>scm:git:https://github.com/as950118/tacet.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/as950118/tacet.git</developerConnection>
   </scm>
 
   <prerequisites>
