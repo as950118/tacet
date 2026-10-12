@@ -1,6 +1,6 @@
 {
   "name": "@tacet-api/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Tacet CLI: find frontend code broken by backend API changes, check frontend code against the real API",
   "keywords": [
     "tacet",
@@ -44,10 +44,10 @@
     "build": "tsc -b tsconfig.json"
   },
   "dependencies": {
-    "@tacet-api/ai-anthropic": "^0.1.1",
-    "@tacet-api/core": "^0.1.1",
-    "@tacet-api/extractor-java": "^0.1.1",
-    "@tacet-api/extractor-typescript": "^0.1.1",
+    "@tacet-api/ai-anthropic": "^0.1.2",
+    "@tacet-api/core": "^0.1.2",
+    "@tacet-api/extractor-java": "^0.1.2",
+    "@tacet-api/extractor-typescript": "^0.1.2",
     "commander": "^15.0.0"
   }
 }

@@ -6,7 +6,7 @@
 
   <groupId>io.github.as950118</groupId>
   <artifactId>tacet-maven-plugin</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
   <packaging>maven-plugin</packaging>
 
   <name>Tacet Maven Plugin</name>
