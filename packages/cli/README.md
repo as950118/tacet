@@ -21,4 +21,4 @@ tacet verify --backend ./backend --base origin/main   # + AI review of undecided
 ```
 
 Every command supports `--format json`; reports also render as Markdown for PR comments.
-Documentation: https://github.com/heonjinjeong/tacet
+Documentation: https://github.com/as950118/tacet

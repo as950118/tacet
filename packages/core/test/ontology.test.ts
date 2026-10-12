@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildOntology, focusOntology, pagesByApi, type Ontology } from "../src/analysis/ontology.js";
 import { ProjectModel } from "../src/analysis/model.js";
+import { analyzeUsage } from "../src/analysis/usage.js";
 import { renderOntologyHtml, renderOntologyMermaid, renderOntologyTurtle } from "../src/report/ontology.js";
 import type { FunctionInfo, RouteInfo } from "../src/ir/types.js";
 import { access, backend, call, dto, endpoint, fn, frontend, t } from "./builders.js";
@@ -206,5 +207,16 @@ describe("ontology renderers", () => {
     expect(html).not.toMatch(/<script[^>]+src=/);
     expect(html.match(/<\/script>/g)).toHaveLength(2);
     expect(html).toContain("Page ↔ API");
+    expect(html).toContain('"usage":null');
+    const script = html.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</script>"));
+    expect(() => new Function(script)).not.toThrow();
+  });
+
+  it("embeds endpoint usage for the Unused APIs tab", () => {
+    const model = new ProjectModel(frontend([call("c1", "GET", "/users/{id}")]), backend([endpoint("GET", "/users/{id}", null), endpoint("DELETE", "/users/{id}", null)]));
+    const html = renderOntologyHtml(buildOntology(model), { title: "t", usage: analyzeUsage([{ name: "web", model }]) });
+    const data = JSON.parse(html.match(/<script id="ontology-data" type="application\/json">([\s\S]*?)<\/script>/)![1]);
+    expect(data.usage.totals).toMatchObject({ frontend: 1, unused: 1 });
+    expect(data.usage.rows.find((r: { id: string }) => r.id === "DELETE /users/{id}")).toMatchObject({ u: "unused", om: ["GET"], c: "Controller" });
   });
 });

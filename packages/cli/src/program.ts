@@ -199,10 +199,12 @@ export function buildProgram(): Command {
     .option("--depth <n>", "with --focus: relations to follow from the matches", (v) => Number.parseInt(v, 10), 2)
     .option("--no-files", "leave out File entities and definedIn relations")
     .option("--all", "keep frontend functions that lead to no API")
+    .option("--also <indexes...>", "html: index databases of other frontends on the same backend, for the Unused APIs tab")
     .addOption(formatOption(["html", "text", "json", "mermaid", "turtle"], "html"))
     .option("-o, --out <path>", "output file (default .tacet/ontology.html for html)")
-    .action((opts: { focus?: string; depth: number; files: boolean; all?: boolean; format: Format; out?: string }) => {
-      const ontology = workspace().ontology({
+    .action((opts: { focus?: string; depth: number; files: boolean; all?: boolean; also?: string[]; format: Format; out?: string }) => {
+      const ws = workspace();
+      const ontology = ws.ontology({
         focus: opts.focus,
         depth: opts.depth,
         includeFiles: opts.files,
@@ -218,7 +220,11 @@ export function buildProgram(): Command {
               ? renderOntologyMermaid(ontology)
               : opts.format === "text"
                 ? formatOntology(ontology, opts.focus)
-                : renderOntologyHtml(ontology, { title, subtitle: `${ontology.pages.length} pages · ${ontology.stats.entities.Endpoint ?? 0} APIs · ${ontology.stats.triples} triples` });
+                : renderOntologyHtml(ontology, {
+                    title,
+                    subtitle: `${ontology.pages.length} pages · ${ontology.stats.entities.Endpoint ?? 0} APIs · ${ontology.stats.triples} triples`,
+                    usage: ws.hasBackendBaseline() ? ws.usage(opts.also) : undefined,
+                  });
       emit(output, opts.out ?? (opts.format === "html" ? ".tacet/ontology.html" : undefined));
     });
 

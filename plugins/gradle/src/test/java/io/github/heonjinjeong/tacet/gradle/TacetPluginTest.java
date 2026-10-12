@@ -23,7 +23,7 @@ class TacetPluginTest {
     private void buildFile(String backend, String extra) throws IOException {
         Files.writeString(project.resolve("settings.gradle.kts"), "rootProject.name = \"backend\"\n");
         Files.writeString(project.resolve("build.gradle.kts"), """
-                plugins { id("io.github.heonjinjeong.tacet") }
+                plugins { id("io.github.as950118.tacet") }
                 tacet {
                     frontendDir.set(file("%s"))
                     backendDir.set(file("%s"))

@@ -1,6 +1,6 @@
 [project]
-name = "tacet"
-version = "0.1.0"
+name = "tacet-api"
+version = "0.1.1"
 description = "Find the frontend code a backend API change breaks: Python bindings and FastMCP tools for Tacet (TypeScript frontend + Spring Boot backend)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,9 +23,9 @@ dependencies = []
 fastmcp = ["fastmcp>=2.10"]
 
 [project.urls]
-Homepage = "https://github.com/heonjinjeong/tacet"
-Repository = "https://github.com/heonjinjeong/tacet"
-Issues = "https://github.com/heonjinjeong/tacet/issues"
+Homepage = "https://github.com/as950118/tacet"
+Repository = "https://github.com/as950118/tacet"
+Issues = "https://github.com/as950118/tacet/issues"
 
 [dependency-groups]
 dev = ["pytest>=8", "fastmcp>=2.10"]

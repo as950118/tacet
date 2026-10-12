@@ -1,6 +1,6 @@
 {
   "name": "@tacet-api/extractor-typescript",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tacet TypeScript frontend extractor (ts-morph): API calls and response field reads",
   "keywords": [
     "tacet",
@@ -13,14 +13,14 @@
   ],
   "license": "Apache-2.0",
   "author": "Heonjin Jeong",
-  "homepage": "https://github.com/heonjinjeong/tacet#readme",
+  "homepage": "https://github.com/as950118/tacet#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/heonjinjeong/tacet.git",
+    "url": "git+https://github.com/as950118/tacet.git",
     "directory": "packages/extractor-typescript"
   },
   "bugs": {
-    "url": "https://github.com/heonjinjeong/tacet/issues"
+    "url": "https://github.com/as950118/tacet/issues"
   },
   "type": "module",
   "main": "./dist/index.js",
@@ -44,7 +44,7 @@
     "build": "tsc -b tsconfig.json"
   },
   "dependencies": {
-    "@tacet-api/core": "^0.1.0",
+    "@tacet-api/core": "^0.1.1",
     "@vue/compiler-dom": "^3.5.43",
     "ts-morph": "^28.0.0"
   }

@@ -1,4 +1,5 @@
 import type { Ontology, OntologyClass, OntologyEntity } from "../analysis/ontology.js";
+import type { UsageReport } from "../analysis/usage.js";
 
 export interface OntologyRenderOptions {
   /** Classes to leave out (default for Mermaid: File, DtoField, Enum). */
@@ -145,6 +146,8 @@ function literal(text: string): string {
 export interface OntologyHtmlOptions {
   title: string;
   subtitle?: string;
+  /** Who calls each endpoint (`analyzeUsage`): adds the Unused APIs tab. */
+  usage?: UsageReport;
 }
 
 /**
@@ -152,7 +155,8 @@ export interface OntologyHtmlOptions {
  * a Page × API matrix, a searchable triple table and the schema diagram.
  */
 export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOptions): string {
-  const payload = JSON.stringify({ ontology, title: options.title, subtitle: options.subtitle ?? "", styles: CLASS_STYLE })
+  const usage = options.usage ? compactUsage(options.usage) : null;
+  const payload = JSON.stringify({ ontology, usage, title: options.title, subtitle: options.subtitle ?? "", styles: CLASS_STYLE })
     .replace(/</g, "\\u003c")
     .replace(/[\u2028\u2029]/g, (c) => (c === "\u2028" ? "\\u2028" : "\\u2029"));
   return `<!doctype html>
@@ -174,6 +178,7 @@ export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOpti
 <nav class="tabs" role="tablist">
   <button role="tab" data-tab="graph" aria-selected="true">Graph</button>
   <button role="tab" data-tab="matrix">Page ↔ API</button>
+  <button role="tab" data-tab="usage" id="tab-usage-btn" hidden>Unused APIs</button>
   <button role="tab" data-tab="triples">Triples</button>
   <button role="tab" data-tab="schema">Schema</button>
 </nav>
@@ -241,6 +246,22 @@ export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOpti
   <div class="scroll" id="pa-matrix-wrap" hidden><table id="matrix" class="matrix"></table></div>
 </section>
 
+<section id="tab-usage" class="tab" hidden>
+  <div id="us-summary" class="us-summary"></div>
+  <div class="toolbar">
+    <div class="segmented" role="group" aria-label="Group by">
+      <button data-us-mode="path" aria-pressed="true">By path</button>
+      <button data-us-mode="controller" aria-pressed="false">By controller</button>
+    </div>
+    <input id="us-filter" type="search" placeholder="Filter paths, controllers…" autocomplete="off">
+    <label class="check" title="Controllers none of whose endpoints are used"><input id="us-whole" type="checkbox"> Whole controllers only</label>
+  </div>
+  <main class="pa-main">
+    <aside class="nav"><div id="us-count" class="muted small"></div><div id="us-list" class="page-list"></div></aside>
+    <section id="us-detail" class="pa-detail"></section>
+  </main>
+</section>
+
 <section id="tab-triples" class="tab" hidden>
   <div class="toolbar">
     <input id="triple-search" type="search" placeholder="Filter triples…" autocomplete="off">
@@ -260,6 +281,29 @@ export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOpti
 </body>
 </html>
 `;
+}
+
+/** The usage report as the explorer needs it: one short row per endpoint. */
+function compactUsage(report: UsageReport) {
+  return {
+    totals: report.totals,
+    frontends: report.frontends,
+    serviceCalls: report.serviceCalls,
+    gatewayRoutes: report.gatewayRoutes,
+    rows: report.endpoints.map((e) => ({
+      id: e.endpoint,
+      m: e.method,
+      p: e.path,
+      c: e.controller,
+      f: e.location.file,
+      l: e.location.line,
+      u: e.usage,
+      fe: e.frontends.map((f) => `${f.frontend} ${f.calls}`),
+      sv: e.services.map((x) => `${x.handler.split(".").pop()}${x.referenced ? "" : " (never called)"}`),
+      om: e.otherMethodsUsed,
+      r: e.routes,
+    })),
+  };
 }
 
 function escapeHtml(text: string): string {
@@ -496,6 +540,39 @@ h2.section { font-size: 14px; margin: 20px 24px 8px; }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--line); white-space: nowrap; }
 .pill.broken { color: var(--broken); border-color: var(--broken); }
 .pill.unused { color: var(--unused); }
+:root { --u-frontend: #2f7d4f; --u-service: #3b6fd8; --u-client: #c98100; --u-unused: #d33a3a; }
+@media (prefers-color-scheme: dark) { :root { --u-frontend: #4fae78; --u-service: #7aa2f7; --u-client: #e6a73a; --u-unused: #f07171; } }
+.us-summary { padding: 0 24px 14px; }
+@media (max-width: 600px) { .us-summary { padding-left: 16px; padding-right: 16px; } }
+.us-bar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--line); }
+.us-bar span { display: block; height: 100%; min-width: 2px; }
+.us-bar.mini { height: 6px; border-radius: 3px; width: 72px; flex: none; }
+.u-frontend { background: var(--u-frontend); } .u-service { background: var(--u-service); }
+.u-client-declared { background: var(--u-client); } .u-unused { background: var(--u-unused); }
+.us-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.us-legend button { display: flex; gap: 8px; align-items: center; text-align: left; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 12px; color: var(--text); font: inherit; cursor: pointer; }
+.us-legend button[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.us-legend button b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.us-legend .dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.us-legend small { color: var(--muted); display: block; font-size: 11.5px; }
+.us-note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.us-folder { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; width: 100%; text-align: left; border: 0;
+  background: none; color: var(--text); font: inherit; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.us-folder:hover, .us-folder[aria-current="true"] { background: var(--bg); }
+.us-folder .fname { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; word-break: break-all; }
+.us-folder .n { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.us-folder .n b { color: var(--u-unused); font-weight: 600; }
+.us-folder .us-bar { grid-column: 1 / -1; width: 100%; }
+.us-group { margin: 16px 0 6px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.us-group h4 { margin: 0; font-size: 13.5px; }
+.us-group .file { color: var(--muted); font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+.us-row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.us-row .path { flex: 1 1 260px; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+.us-row .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.us-row button { border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; font-size: 12px; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.badge.u { color: #fff; border-color: transparent; }
+.badge.whole { color: var(--u-unused); border-color: var(--u-unused); }
 `;
 
 // Plain JS (no template literals) so it can live inside this TypeScript template string.
@@ -1285,11 +1362,11 @@ const SCRIPT = `
   function setMode(mode) {
     paMode = mode;
     paOnlyCommon = false;
-    document.querySelectorAll(".segmented button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.mode === mode)); });
+    document.querySelectorAll("#tab-matrix .segmented button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.mode === mode)); });
     document.getElementById("pa-unused-wrap").hidden = mode !== "apis";
     document.getElementById("pa-common-wrap").hidden = mode !== "apis" || !commonCount;
   }
-  document.querySelectorAll(".segmented button").forEach(function (b) { b.onclick = function () { setMode(b.dataset.mode); renderPa(); }; });
+  document.querySelectorAll("#tab-matrix .segmented button").forEach(function (b) { b.onclick = function () { setMode(b.dataset.mode); renderPa(); }; });
   ["pa-filter", "pa-broken", "pa-unused", "pa-common"].forEach(function (id) { document.getElementById(id).addEventListener(id === "pa-filter" ? "input" : "change", renderPa); });
 
   function renderPa() {
@@ -1565,6 +1642,189 @@ const SCRIPT = `
   }
   tsearch.addEventListener("input", renderTriples); predSelect.onchange = renderTriples;
 
+
+  // ================================================================ unused APIs
+  var US = data.usage;
+  var US_KINDS = [["unused", "Unused", "no caller found"], ["client-declared", "Client method only", "a Feign client declares it, nothing calls that method"],
+    ["service", "Backend services only", "called service-to-service (Feign / @HttpExchange)"], ["frontend", "Frontend", "a frontend calls it"]];
+  var usMode = "path", usScope = [], usController = null, usKinds = new Set(["unused", "client-declared"]);
+  function usIsUnused(r) { return r.u === "unused" || r.u === "client-declared"; }
+  if (US) {
+    document.getElementById("tab-usage-btn").hidden = false;
+    var usTotal = new Map(), usUnused = new Map();
+    US.rows.forEach(function (r) {
+      usTotal.set(r.c, (usTotal.get(r.c) || 0) + 1);
+      if (usIsUnused(r)) usUnused.set(r.c, (usUnused.get(r.c) || 0) + 1);
+    });
+    US.rows.forEach(function (r) {
+      r.segs = apiSegs({ attributes: { path: r.p }, label: r.id });
+      r.whole = usUnused.get(r.c) === usTotal.get(r.c);
+      r.cname = r.c.split(".").pop();
+    });
+    document.querySelectorAll("#tab-usage .segmented button").forEach(function (b) {
+      b.onclick = function () {
+        usMode = b.dataset.usMode; usScope = []; usController = null;
+        document.querySelectorAll("#tab-usage .segmented button").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+        renderUsage();
+      };
+    });
+    document.getElementById("us-filter").addEventListener("input", renderUsage);
+    document.getElementById("us-whole").addEventListener("change", renderUsage);
+  }
+  function usKindLabel(u) { for (var i = 0; i < US_KINDS.length; i++) if (US_KINDS[i][0] === u) return US_KINDS[i][1]; return u; }
+  function usBar(rows, mini) {
+    var bar = el("div", "us-bar" + (mini ? " mini" : "")), n = rows.length || 1;
+    US_KINDS.slice().reverse().forEach(function (k) {
+      var c = rows.filter(function (r) { return r.u === k[0]; }).length;
+      if (!c) return;
+      var seg = el("span", "u-" + k[0]); seg.style.width = (c * 100 / n) + "%"; seg.title = k[1] + ": " + c;
+      bar.appendChild(seg);
+    });
+    return bar;
+  }
+  /** Rows passing the kind, whole-controller and text filters. */
+  function usFiltered() {
+    var q = document.getElementById("us-filter").value.trim().toLowerCase();
+    var whole = document.getElementById("us-whole").checked;
+    return US.rows.filter(function (r) {
+      if (!usKinds.has(r.u)) return false;
+      if (whole && !r.whole) return false;
+      return !q || r.id.toLowerCase().indexOf(q) >= 0 || r.c.toLowerCase().indexOf(q) >= 0 || r.f.toLowerCase().indexOf(q) >= 0;
+    });
+  }
+  function renderUsageSummary() {
+    var box = document.getElementById("us-summary"); box.textContent = "";
+    box.appendChild(usBar(US.rows, false));
+    var legend = el("div", "us-legend");
+    US_KINDS.forEach(function (k) {
+      var c = US.rows.filter(function (r) { return r.u === k[0]; }).length;
+      if (!c && k[0] === "client-declared") return;
+      var b = el("button"); b.title = k[2] + " — click to show only these, shift-click to add";
+      b.appendChild(el("span", "dot u-" + k[0]));
+      var t = el("span"); t.appendChild(el("b", null, String(c))); t.appendChild(el("small", null, k[1] + " · " + Math.round(c * 100 / US.rows.length) + "%"));
+      b.appendChild(t);
+      b.setAttribute("aria-pressed", String(usKinds.has(k[0])));
+      b.onclick = function (ev) {
+        if (ev.shiftKey) { if (usKinds.has(k[0]) && usKinds.size > 1) usKinds.delete(k[0]); else usKinds.add(k[0]); }
+        else { usKinds = new Set(k[0] === "unused" ? ["unused", "client-declared"] : [k[0]]); }
+        usScope = []; usController = null; renderUsage();
+      };
+      legend.appendChild(b);
+    });
+    box.appendChild(legend);
+    var blind = US.frontends.map(function (f) { return f.unresolvedCalls ? f.name + ": " + f.unresolvedCalls + " calls with unresolved URLs" : null; }).filter(Boolean);
+    box.appendChild(el("p", "us-note", "Frontends: " + US.frontends.map(function (f) { return f.name; }).join(", ") + " · " + US.serviceCalls + " service client calls" +
+      (US.gatewayRoutes ? " · " + US.gatewayRoutes + " gateway routes" : "") + (blind.length ? " · not visible: " + blind.join(", ") : "") +
+      ". Callers outside the analyzed code (other repos, batch jobs, hand-built URLs) are not seen — check access logs before deleting."));
+  }
+  /** Left: folders (by path) or controllers, the most unused first, each with its usage bar. */
+  function renderUsageList(rows) {
+    var list = document.getElementById("us-list"); list.textContent = "";
+    var all = US.rows.filter(function (r) { return !document.getElementById("us-whole").checked || r.whole; });
+    var folder = function (label, title, scopeRows, allRows, current, onclick) {
+      var b = el("button", "us-folder");
+      b.appendChild(el("span", "fname", label));
+      var n = el("span", "n"); n.appendChild(el("b", null, String(scopeRows.length))); n.appendChild(document.createTextNode(" / " + allRows.length));
+      b.appendChild(n); b.appendChild(usBar(allRows, true)); b.title = title;
+      b.setAttribute("aria-current", String(!!current)); b.onclick = onclick;
+      list.appendChild(b);
+    };
+    if (usMode === "controller") {
+      var byC = new Map(), allByC = new Map();
+      rows.forEach(function (r) { push(byC, r.c, r); });
+      all.forEach(function (r) { push(allByC, r.c, r); });
+      var names = Array.from(byC.keys()).sort(function (a, b) { return byC.get(b).length - byC.get(a).length || a.localeCompare(b); });
+      document.getElementById("us-count").textContent = names.length + " controllers";
+      names.slice(0, 1500).forEach(function (c) {
+        folder(c.split(".").pop() + (byC.get(c)[0].whole ? " ●" : ""), c, byC.get(c), allByC.get(c), c === usController, function () { usController = usController === c ? null : c; renderUsage(); });
+      });
+      return;
+    }
+    var root = buildTree(rows.map(function (r) { return { segs: r.segs, r: r }; }));
+    var allRoot = buildTree(all.map(function (r) { return { segs: r.segs, r: r }; }));
+    var node = root, allNode = allRoot, path = [];
+    for (var i = 0; i < usScope.length; i++) {
+      var c = node.children.get(usScope[i]); if (!c) break;
+      node = c; allNode = allNode.children.get(usScope[i]) || allNode; path.push(usScope[i]);
+    }
+    usScope = path;
+    var crumbs = el("div", "tree-crumbs"), top = el("button", null, "All");
+    top.setAttribute("aria-current", String(!path.length)); top.onclick = function () { usScope = []; renderUsage(); };
+    crumbs.appendChild(top);
+    path.forEach(function (seg, i) {
+      crumbs.appendChild(el("span", "sep", "/"));
+      var b = el("button", null, seg); b.setAttribute("aria-current", String(i === path.length - 1));
+      b.onclick = function () { usScope = path.slice(0, i + 1); renderUsage(); };
+      crumbs.appendChild(b);
+    });
+    list.appendChild(crumbs);
+    var kids = Array.from(node.children.values()).sort(function (a, b) { return b.count - a.count || a.name.localeCompare(b.name); });
+    document.getElementById("us-count").textContent = kids.length + " folders under /" + path.join("/");
+    kids.forEach(function (child) {
+      var label = child.name, target = child, allTarget = allNode.children.get(child.name);
+      while (!target.items.length && target.children.size === 1) {
+        target = target.children.values().next().value; label += "/" + target.name;
+        allTarget = allTarget && allTarget.children.get(target.name);
+      }
+      var scoped = subtreeItems(target, []).map(function (it) { return it.r; });
+      var allRows = allTarget ? subtreeItems(allTarget, []).map(function (it) { return it.r; }) : scoped;
+      folder(label + "/", "Show only /" + target.segs.join("/"), scoped, allRows, false, function () { usScope = target.segs; renderUsage(); });
+    });
+  }
+  /** Right: the endpoints in scope, grouped by controller. */
+  function renderUsageDetail(rows) {
+    var box = document.getElementById("us-detail"); box.textContent = "";
+    var scoped = rows.filter(function (r) {
+      if (usMode === "controller") return !usController || r.c === usController;
+      for (var i = 0; i < usScope.length; i++) if (r.segs[i] !== usScope[i]) return false;
+      return true;
+    });
+    var head = el("div", "head"), title = el("div");
+    title.appendChild(el("h3", null, usMode === "controller" ? (usController ? usController.split(".").pop() : "All controllers") : (usScope.length ? "/" + usScope.join("/") : "All APIs")));
+    var counts = el("div", "counts");
+    counts.appendChild(el("span", "badge", scoped.length + " shown"));
+    var wholeCount = new Set(scoped.filter(function (r) { return r.whole; }).map(function (r) { return r.c; })).size;
+    if (wholeCount) counts.appendChild(el("span", "badge whole", wholeCount + " controllers entirely unused"));
+    title.appendChild(counts); head.appendChild(title); box.appendChild(head);
+    if (!scoped.length) { box.appendChild(el("p", "muted", "Nothing matches the filter.")); return; }
+    var byC = new Map(); scoped.forEach(function (r) { push(byC, r.c, r); });
+    var groups = Array.from(byC.keys()).sort(function (a, b) { return byC.get(b).length - byC.get(a).length || a.localeCompare(b); });
+    var shown = 0;
+    groups.forEach(function (c) {
+      if (shown >= 600) return;
+      var list = byC.get(c), g = el("div", "us-group");
+      g.appendChild(el("h4", null, list[0].cname));
+      g.appendChild(el("span", "badge", (usUnused.get(c) || 0) + " / " + usTotal.get(c) + " unused"));
+      if (list[0].whole) g.appendChild(el("span", "badge whole", "whole controller unused"));
+      g.appendChild(el("span", "file", list[0].f));
+      box.appendChild(g);
+      list.sort(function (a, b) { return a.p.localeCompare(b.p) || a.m.localeCompare(b.m); }).forEach(function (r) {
+        if (shown++ >= 600) return;
+        var row = el("div", "us-row");
+        row.appendChild(methodBadge(r.m)); row.appendChild(el("span", "path", r.p));
+        var tags = el("span", "tags"), u = el("span", "badge u u-" + r.u, usKindLabel(r.u)); tags.appendChild(u);
+        if (r.om.length) tags.appendChild(el("span", "badge", r.om.join("/") + " on this path is used"));
+        if (r.r && !r.r.length) tags.appendChild(el("span", "badge", "no gateway route"));
+        if (r.sv.length) tags.appendChild(el("span", "badge", "via " + r.sv.join(", ")));
+        if (r.fe.length) tags.appendChild(el("span", "badge", r.fe.join(" · ") + " calls"));
+        row.appendChild(tags);
+        row.appendChild(el("span", "file muted small", r.f.split("/").pop() + ":" + r.l));
+        if (byId.has("api:" + r.id)) {
+          var open = el("button", null, "Graph");
+          open.onclick = function () { showTab("graph"); history = []; focus("api:" + r.id); };
+          row.appendChild(open);
+        }
+        box.appendChild(row);
+      });
+    });
+    if (shown > 600) box.appendChild(el("p", "muted small", "Showing the first 600; drill down or filter to narrow."));
+  }
+  function renderUsage() {
+    if (!US) return;
+    var rows = usFiltered();
+    renderUsageSummary(); renderUsageList(rows); renderUsageDetail(rows);
+  }
+
   // ================================================================ schema
   function renderSchema() {
     var POS = { Page: [90, 70], Component: [290, 70], Hook: [290, 190], Function: [490, 190], ApiClient: [490, 70], Endpoint: [690, 70],
@@ -1619,6 +1879,7 @@ const SCRIPT = `
   renderCommonPanel();
   renderDetails();
   renderPa();
+  renderUsage();
   renderTriples();
   renderSchema();
 })();

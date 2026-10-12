@@ -4,7 +4,7 @@ plugins {
     signing
 }
 
-group = "io.github.heonjinjeong"
+group = "io.github.as950118"
 description = "Run Tacet in Gradle builds: find frontend code broken by backend API changes"
 
 repositories {
@@ -40,11 +40,11 @@ sourceSets.main {
 }
 
 gradlePlugin {
-    website = "https://github.com/heonjinjeong/tacet"
-    vcsUrl = "https://github.com/heonjinjeong/tacet"
+    website = "https://github.com/as950118/tacet"
+    vcsUrl = "https://github.com/as950118/tacet"
     plugins {
         create("tacet") {
-            id = "io.github.heonjinjeong.tacet"
+            id = "io.github.as950118.tacet"
             implementationClass = "io.github.heonjinjeong.tacet.gradle.TacetPlugin"
             displayName = "Tacet"
             description = project.description
