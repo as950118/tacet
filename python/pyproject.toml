@@ -1,6 +1,6 @@
 [project]
 name = "tacet-api"
-version = "0.1.1"
+version = "0.1.2"
 description = "Find the frontend code a backend API change breaks: Python bindings and FastMCP tools for Tacet (TypeScript frontend + Spring Boot backend)"
 readme = "README.md"
 requires-python = ">=3.10"

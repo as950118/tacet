@@ -54,7 +54,8 @@ gradlePlugin {
 }
 
 signing {
-    val key = providers.environmentVariable("SIGNING_KEY").orNull
+    // GitHub Actions passes an unset secret as "", so blank means "no key": publish unsigned.
+    val key = providers.environmentVariable("SIGNING_KEY").orNull?.takeIf { it.isNotBlank() }
     if (key != null) useInMemoryPgpKeys(key, providers.environmentVariable("SIGNING_PASSWORD").orNull)
     isRequired = key != null
 }

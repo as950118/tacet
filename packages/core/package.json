@@ -1,6 +1,6 @@
 {
   "name": "@tacet-api/core",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Language-agnostic Tacet engine: IR, SQLite index, API linking, contract checks, change impact, AI verification",
   "keywords": [
     "tacet",
