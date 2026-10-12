@@ -12,7 +12,7 @@
 ## 최초 1회 설정
 
 1. **GitHub 저장소**: `https://github.com/as950118/tacet` (패키지 메타데이터의 repository/scm URL. 다르면 모든 package.json, pom.xml, build.gradle.kts, pyproject.toml의 URL을 바꾼다.)
-2. **npm**: npmjs.com에서 organization `tacet-api` 생성(`@tacet-api` scope) → Automation(또는 publish 권한의 Granular) 토큰 발급 → environment `npm`의 secret `NPM_TOKEN`.
+2. **npm**: npmjs.com에서 organization `tacet-api` 생성(`@tacet-api` scope) → Access Tokens → **Granular Access Token** 발급: Packages and scopes = **Read and write**, 대상은 organization `tacet-api`(아직 없는 패키지도 게시할 수 있도록 개별 패키지가 아닌 scope 전체), **Bypass two-factor authentication(2FA)** 체크 → environment `npm`의 secret `NPM_TOKEN`. 2FA 우회가 꺼진 토큰은 CI에서 `E403 Two-factor authentication or granular access token with bypass 2fa enabled is required`로 실패한다.
 3. **PyPI**: pypi.org에서 API 토큰 발급(첫 업로드 전에는 "Entire account" 범위) → environment `pypi`의 secret `PYPI_API_TOKEN`. 첫 릴리스 후 `tacet-api` 프로젝트 범위 토큰으로 바꾼다.
 4. **Gradle Plugin Portal**: plugins.gradle.org에 GitHub 계정 `as950118`로 로그인(플러그인 ID `io.github.as950118.*`는 이 계정에서만 게시된다) → API Keys → environment `gradle`의 secret `GRADLE_PUBLISH_KEY`, `GRADLE_PUBLISH_SECRET`. 서명 키(`SIGNING_KEY`)가 없으면 서명 없이 게시한다.
 5. **Maven Central (선택)**: central.sonatype.com 로그인(GitHub 계정) → namespace `io.github.as950118` 인증 → User Token 발급 → 저장소 secret `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`. 서명 키(GPG): `gpg --full-generate-key` → 공개키를 keyserver에 업로드(`gpg --keyserver keyserver.ubuntu.com --send-keys <KEYID>`) → `gpg --armor --export-secret-keys <KEYID>`를 secret `SIGNING_KEY`, 암호를 `SIGNING_PASSWORD`. 다 되면 저장소 변수 `MAVEN_CENTRAL_ENABLED`를 `true`로 둔다.
