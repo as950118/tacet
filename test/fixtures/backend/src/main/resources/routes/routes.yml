@@ -1,0 +1,23 @@
+spring:
+  cloud:
+    gateway:
+      routes:
+        # users, rewritten onto the service's context path
+        - id: users
+          uri: ${services.user.url}
+          predicates:
+            - Path=/gw/users/**,/gw/users
+          filters:
+            - AuthFilter
+            - RewritePath=/gw/(?<segment>.*), /api/$\{segment}
+        - id: products
+          uri: lb://product
+          predicates:
+            - name: Path
+              args:
+                patterns: /shop/products/**
+          filters:
+            - name: StripPrefix
+              args:
+                parts: 1
+            - PrefixPath=/api

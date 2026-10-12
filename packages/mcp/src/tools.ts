@@ -246,6 +246,26 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
       run: async (a) => ws.relations(a),
     }),
     tool({
+      name: "unused_apis",
+      title: "Unused APIs",
+      description:
+        "Backend endpoints nothing calls: not this index's frontend (nor the frontends of `also` indexes against the same " +
+        "backend), nor another backend service through a Feign / @HttpExchange client. Each endpoint has its usage " +
+        "(frontend / service / client-declared / unused), callers, other methods on the same path that are used, and the " +
+        "gateway routes reaching it. Callers outside the analyzed code (other repos, batch jobs, built URLs) are not seen.",
+      parameters: {
+        also: z.array(z.string()).optional().describe("Index databases of other frontends using the same backend"),
+        all: z.boolean().default(false).describe("Every endpoint, not only the unused ones"),
+      },
+      readOnly: true,
+      run: async (a) => {
+        const report = ws.usage(a.also);
+        return a.all
+          ? report
+          : { ...report, endpoints: report.endpoints.filter((e) => e.usage === "unused" || e.usage === "client-declared") };
+      },
+    }),
+    tool({
       name: "ontology",
       title: "Project ontology",
       description:

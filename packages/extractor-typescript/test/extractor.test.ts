@@ -468,6 +468,41 @@ export async function load() {
     expect(reads).toEqual(["attributes.metaData.disks", "attributes.name"]);
   });
 
+  it("recognizes axios instances wrapped by an immediately invoked function", () => {
+    const m = extract({
+      "shared.ts": `import axios from "axios";
+export const sharedApi = axios.create({ baseURL: "/api/monitoring" });`,
+      "local.ts": `import { sharedApi } from "./shared";
+export const monitoringApi = (() => {
+  const base = sharedApi;
+  base.interceptors.request.use((c) => c);
+  return base;
+})();
+export const rooms = (id: string) => monitoringApi.get(\`/datacenters/rooms/\${id}\`);`,
+    });
+    expect(m.apiCalls.map((c) => `${c.method} ${c.endpointPattern}`)).toContain("GET /api/monitoring/datacenters/rooms/{param}");
+  });
+
+  it("reads calls to configured request helpers: instance, method and URL from arguments", () => {
+    const m = extract(
+      {
+        "api.ts": `import axios from "axios";
+export const awsApi = axios.create({ baseURL: "/api/aws" });
+export function callApi(instance: any, method: string, url: string, config?: any) { return instance.request({ method, url, ...config }); }`,
+        "a.ts": `import { awsApi, callApi } from "./api";
+export async function load(id: string) {
+  const { data } = await callApi(awsApi, "get", \`/network/vpcs/\${id}\`, { params: { region: "x" } });
+  return data.name;
+}`,
+      },
+      { requestHelpers: { callApi: { instance: 0, method: 1, url: 2 } } },
+    );
+    expect(m.apiCalls.filter((c) => c.file === "a.ts")).toEqual([
+      expect.objectContaining({ method: "GET", endpointPattern: "/api/aws/network/vpcs/{param}", resolution: "config" }),
+    ]);
+    expect(m.propertyAccesses.map((a) => a.path)).toEqual([["name"]]);
+  });
+
   it("resolves path aliases from the tsconfig nearest to each file when there is no root tsconfig.json", () => {
     const m = extract({
       "libs/api/src/index.ts": `import axios from "axios";

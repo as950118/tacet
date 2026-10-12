@@ -23,6 +23,8 @@ export class ProjectModel {
   readonly dtos = new Map<string, DtoInfo>();
   readonly enums = new Map<string, EnumInfo>();
   readonly links = new Map<string, ApiLink>();
+  /** Backend service-to-service requests (Feign / @HttpExchange) linked to the endpoints they call. */
+  readonly serviceLinks = new Map<string, ApiLink>();
   private readonly accessesByCall = new Map<string, PropertyAccessInfo[]>();
 
   constructor(
@@ -44,6 +46,10 @@ export class ProjectModel {
     if (backend) {
       const linker = new EndpointLinker(backend.endpoints, config.linking);
       for (const call of frontend.apiCalls) this.links.set(call.id, linker.link(call));
+      const serviceLinker = new EndpointLinker(backend.endpoints, { backendBasePath: config.linking?.backendBasePath });
+      for (const call of backend.serviceCalls ?? []) {
+        this.serviceLinks.set(call.id, serviceLinker.linkServiceCall(call, backend.contextPaths));
+      }
     }
   }
 

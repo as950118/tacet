@@ -7,6 +7,7 @@ import type {
   FunctionInfo,
   HttpMethod,
   PropertyAccessInfo,
+  ServiceCallInfo,
   TypeRef,
 } from "../src/ir/types.js";
 
@@ -61,7 +62,29 @@ export function backend(endpoints: EndpointInfo[], dtos: DtoInfo[] = []): Backen
     endpoints,
     dtos,
     enums: [{ id: "Status", name: "Status", values: ["A"], location: loc("Status.java") }],
+    serviceCalls: [],
+    gatewayRoutes: [],
+    contextPaths: [],
     warnings: [],
+  };
+}
+
+export function serviceCall(
+  method: HttpMethod,
+  path: string,
+  extra: Partial<ServiceCallInfo> = {},
+): ServiceCallInfo {
+  const handler = extra.handler ?? `com.example.UserClient#${method.toLowerCase()}`;
+  return {
+    id: `${handler} ${method} ${path}`,
+    client: handler.split("#")[0],
+    target: "${services.user.url}",
+    method,
+    path,
+    handler,
+    referenced: true,
+    location: loc("UserClient.java"),
+    ...extra,
   };
 }
 

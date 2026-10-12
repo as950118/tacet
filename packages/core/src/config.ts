@@ -33,6 +33,19 @@ export interface CommonApisConfig {
   exclude?: string[];
 }
 
+/**
+ * A project function that sends a request it is told about through its arguments, e.g.
+ * `callApi(awsApiInstance, "get", "/network/vpcs")` → { instance: 0, method: 1, url: 2 }. Argument positions are 0-based.
+ */
+export interface RequestHelperConfig {
+  /** Argument holding the axios instance (its baseURL is prefixed). */
+  instance?: number;
+  /** Argument holding the HTTP method as a string, or the method itself when fixed. */
+  method: number | HttpMethod;
+  /** Argument holding the URL. */
+  url: number;
+}
+
 export interface TacetConfig {
   /** Explicit mapping from API client calls (e.g. "userApi.getUser") to backend endpoints. */
   apiClientMap?: Record<string, ApiClientMapping>;
@@ -50,6 +63,8 @@ export interface TacetConfig {
   env?: Record<string, string>;
   envFiles?: string[];
   commonApis?: CommonApisConfig;
+  /** Generic request helpers by function name, e.g. { "callApiWithConvertedUrl": { "instance": 0, "method": 1, "url": 2 } }. */
+  requestHelpers?: Record<string, RequestHelperConfig>;
 }
 
 export function loadConfig(configPath: string | undefined): TacetConfig {

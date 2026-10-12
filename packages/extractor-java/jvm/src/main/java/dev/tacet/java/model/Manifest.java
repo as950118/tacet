@@ -29,6 +29,29 @@ public final class Manifest {
             TypeRef response,
             SourceLocation location) {}
 
+    /** A request this backend sends to another service through a declarative client (@FeignClient, @HttpExchange). */
+    public record ServiceCallInfo(
+            String id,
+            String client,
+            String target,
+            String method,
+            String path,
+            String handler,
+            boolean referenced,
+            SourceLocation location) {}
+
+    public record PathRewrite(String regex, String replacement) {}
+
+    /** A Spring Cloud Gateway route: requests matching `paths` are forwarded to `uri` after the filters rewrite them. */
+    public record GatewayRouteInfo(
+            String id,
+            String uri,
+            List<String> paths,
+            List<PathRewrite> rewrites,
+            int stripPrefix,
+            String prefixPath,
+            SourceLocation location) {}
+
     public record BackendManifest(
             String language,
             String rootDir,
@@ -36,5 +59,8 @@ public final class Manifest {
             List<EndpointInfo> endpoints,
             List<DtoInfo> dtos,
             List<EnumInfo> enums,
+            List<ServiceCallInfo> serviceCalls,
+            List<GatewayRouteInfo> gatewayRoutes,
+            List<String> contextPaths,
             List<String> warnings) {}
 }

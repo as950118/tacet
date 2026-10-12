@@ -9,6 +9,9 @@ import dev.tacet.java.model.Manifest.BackendManifest;
 import dev.tacet.java.model.Manifest.DtoFieldInfo;
 import dev.tacet.java.model.Manifest.DtoInfo;
 import dev.tacet.java.model.Manifest.EndpointInfo;
+import dev.tacet.java.model.Manifest.GatewayRouteInfo;
+import dev.tacet.java.model.Manifest.PathRewrite;
+import dev.tacet.java.model.Manifest.ServiceCallInfo;
 import dev.tacet.java.model.Manifest.ParamInfo;
 import dev.tacet.java.model.TypeRef;
 import java.io.IOException;
@@ -185,6 +188,57 @@ class BackendExtractorTest {
     }
 
     @Nested
+    class ServiceClientsAndConfig {
+        @Test
+        void extractsFeignAndHttpExchangeRequests() {
+            assertEquals(
+                    List.of(
+                            "com.example.client.PaymentClient#listPayments GET /payments",
+                            "com.example.client.ProductExchange#product GET /api/products/{id}",
+                            "com.example.client.UserServiceClient#removeUser DELETE /api/users/{id}",
+                            "com.example.client.UserServiceClient#getUser GET /api/users/{id}"),
+                    manifest.serviceCalls().stream().map(ServiceCallInfo::id).toList());
+            ServiceCallInfo getUser = serviceCall("com.example.client.UserServiceClient#getUser GET /api/users/{id}");
+            assertEquals("${services.user.url}", getUser.target());
+            assertEquals("src/main/java/com/example/client/UserServiceClient.java", getUser.location().file());
+            assertEquals("payment", serviceCall("com.example.client.PaymentClient#listPayments GET /payments").target());
+        }
+
+        @Test
+        void marksClientMethodsNothingCalls() {
+            assertTrue(serviceCall("com.example.client.UserServiceClient#getUser GET /api/users/{id}").referenced());
+            assertTrue(serviceCall("com.example.client.ProductExchange#product GET /api/products/{id}").referenced());
+            assertFalse(serviceCall("com.example.client.UserServiceClient#removeUser DELETE /api/users/{id}").referenced());
+        }
+
+        @Test
+        void readsContextPathsWithPlaceholderDefaults() {
+            assertEquals(List.of("/api"), manifest.contextPaths());
+        }
+
+        @Test
+        void readsGatewayRoutesInShortcutAndExpandedForm() {
+            assertEquals(2, manifest.gatewayRoutes().size());
+            GatewayRouteInfo users = manifest.gatewayRoutes().get(0);
+            assertEquals("users", users.id());
+            assertEquals("${services.user.url}", users.uri());
+            assertEquals(List.of("/gw/users/**", "/gw/users"), users.paths());
+            assertEquals(List.of(new PathRewrite("/gw/(?<segment>.*)", "/api/$\\{segment}")), users.rewrites());
+            assertEquals("src/main/resources/routes/routes.yml", users.location().file());
+
+            GatewayRouteInfo products = manifest.gatewayRoutes().get(1);
+            assertEquals(List.of("/shop/products/**"), products.paths());
+            assertEquals(1, products.stripPrefix());
+            assertEquals("/api", products.prefixPath());
+        }
+    }
+
+    private static ServiceCallInfo serviceCall(String id) {
+        return manifest.serviceCalls().stream().filter(c -> c.id().equals(id)).findFirst()
+                .orElseThrow(() -> new AssertionError("missing service call " + id));
+    }
+
+    @Nested
     class EdgeCases {
         @TempDir
         Path dir;
@@ -319,5 +373,21 @@ class BackendExtractorTest {
             String json = Main.toJson(result);
             assertTrue(json.contains("\"response\":{\"kind\":\"array\",\"element\":{\"kind\":\"scalar\",\"name\":\"String\"}}"), json);
         }
-    }
+    
+        @Test
+        void readsRoutesAndContextPathFromProperties() throws IOException {
+            BackendManifest result = extract(Map.of("src/main/resources/application.properties", """
+                    server.servlet.context-path=/svc
+                    spring.cloud.gateway.routes[0].id=orders
+                    spring.cloud.gateway.routes[0].uri=lb://orders
+                    spring.cloud.gateway.routes[0].predicates[0]=Path=/o/**
+                    spring.cloud.gateway.routes[0].filters[0]=StripPrefix=1
+                    """));
+            assertEquals(List.of("/svc"), result.contextPaths());
+            GatewayRouteInfo route = result.gatewayRoutes().get(0);
+            assertEquals("orders", route.id());
+            assertEquals(List.of("/o/**"), route.paths());
+            assertEquals(1, route.stripPrefix());
+        }
+}
 }

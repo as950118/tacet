@@ -11,6 +11,7 @@ import type {
   FunctionInfo,
   PropertyAccessInfo,
   RouteInfo,
+  ServiceCallInfo,
 } from "../ir/types.js";
 import type { Ontology, OntologyEntity, OntologyTriple, PageApiUse, RelatedPage } from "../analysis/ontology.js";
 import { RELATION_TABLES, SCHEMA_SQL, SCHEMA_VERSION, TABLES } from "./schema.js";
@@ -182,6 +183,18 @@ export class IndexStore {
         manifest.enums.map((e) => ({ id: e.id, file: e.location.file, columns: { name: e.name }, value: e })),
         changedFiles,
       );
+      this.sync(
+        "service_calls",
+        (manifest.serviceCalls ?? []).map((c) => ({
+          id: c.id,
+          file: c.location.file,
+          columns: { method: c.method, path: c.path },
+          value: c,
+        })),
+        changedFiles,
+      );
+      this.setMeta("backend.gatewayRoutes", JSON.stringify(manifest.gatewayRoutes ?? []));
+      this.setMeta("backend.contextPaths", JSON.stringify(manifest.contextPaths ?? []));
       this.setMeta("backend.language", manifest.language);
       this.setMeta("backend.rootDir", manifest.rootDir);
       this.setMeta("backend.generatedAt", manifest.generatedAt);
@@ -424,6 +437,9 @@ export class IndexStore {
       endpoints: this.rows<EndpointInfo>("SELECT json FROM endpoints ORDER BY path, method"),
       dtos: this.rows<DtoInfo>("SELECT json FROM dtos ORDER BY id"),
       enums: this.rows<EnumInfo>("SELECT json FROM enums ORDER BY id"),
+      serviceCalls: this.rows<ServiceCallInfo>("SELECT json FROM service_calls ORDER BY id"),
+      gatewayRoutes: JSON.parse(this.getMeta("backend.gatewayRoutes") ?? "[]"),
+      contextPaths: JSON.parse(this.getMeta("backend.contextPaths") ?? "[]"),
       warnings: JSON.parse(this.getMeta("backend.warnings") ?? "[]"),
     };
   }

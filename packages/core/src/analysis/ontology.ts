@@ -186,6 +186,12 @@ export function buildOntology(model: ProjectModel, options: OntologyOptions = {}
   const entities = new Map<string, OntologyEntity>();
   const triples = new Map<string, OntologyTriple>();
   const lookup = { dtos: model.dtos, enums: model.enums };
+  // Backend services calling each endpoint through a client method that is used.
+  const serviceCallers = new Map<string, number>();
+  for (const call of model.backend?.serviceCalls ?? []) {
+    const endpointId = model.serviceLinks.get(call.id)?.endpointId;
+    if (call.referenced && endpointId) serviceCallers.set(endpointId, (serviceCallers.get(endpointId) ?? 0) + 1);
+  }
 
   const entity = (e: Omit<OntologyEntity, "attributes"> & { attributes?: OntologyEntity["attributes"] }): string => {
     if (!entities.has(e.id)) entities.set(e.id, { ...e, attributes: e.attributes ?? {} });
@@ -331,7 +337,12 @@ export function buildOntology(model: ProjectModel, options: OntologyOptions = {}
       file: endpoint.location.file,
       line: endpoint.location.line,
       status: null,
-      attributes: { method: endpoint.method, path: endpoint.path, handler: endpoint.handler },
+      attributes: {
+        method: endpoint.method,
+        path: endpoint.path,
+        handler: endpoint.handler,
+        serviceCallers: serviceCallers.get(endpoint.id) ?? 0,
+      },
     });
     const [controllerId, method] = endpoint.handler.split("#");
     const controller = entity({

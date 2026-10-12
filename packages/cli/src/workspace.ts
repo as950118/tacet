@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   analyzeChangeImpact,
+  analyzeUsage,
   buildOntology,
   checkContract,
   focusOntology,
@@ -24,6 +25,7 @@ import {
   type OntologyOptions,
   type OntologyTriple,
   type StoredPageApi,
+  type UsageReport,
   type VerifiedChangeReport,
 } from "@tacet-api/core";
 import { JavaExtractor } from "@tacet-api/extractor-java";
@@ -62,6 +64,9 @@ export interface ExtractBackendResult {
   endpoints: number;
   dtos: number;
   enums: number;
+  /** Feign / @HttpExchange client requests to other services. */
+  serviceCalls: number;
+  gatewayRoutes: number;
   warnings: string[];
   changedEndpoints: string[];
 }
@@ -210,6 +215,8 @@ export class TacetWorkspace {
       endpoints: update.endpoints,
       dtos: update.dtos,
       enums: manifest.enums.length,
+      serviceCalls: manifest.serviceCalls?.length ?? 0,
+      gatewayRoutes: manifest.gatewayRoutes?.length ?? 0,
       warnings: manifest.warnings,
       changedEndpoints: update.changedEndpoints,
     };
@@ -384,6 +391,21 @@ export class TacetWorkspace {
   ontology(options: OntologyQueryOptions = {}): Ontology {
     const ontology = buildOntology(this.model(), options);
     return options.focus ? focusOntology(ontology, options.focus, options.depth) : ontology;
+  }
+
+  /**
+   * Who uses each backend endpoint: this index's frontend, the frontends of `otherIndexes` (other apps against
+   * the same backend), and backend services through Feign / @HttpExchange clients.
+   */
+  usage(otherIndexes: string[] = []): UsageReport {
+    const indexes = [this.indexPath, ...otherIndexes.map((p) => resolve(p))];
+    const models = indexes.map((path, i) => (i === 0 ? this : new TacetWorkspace(path)).model());
+    const frontendNames = models.map((m) => basename(m.frontend.rootDir));
+    const names =
+      new Set(frontendNames).size === models.length
+        ? frontendNames
+        : indexes.map((path) => basename(path).replace(/\.[^.]+$/, ""));
+    return analyzeUsage(models.map((model, i) => ({ name: names[i], model })));
   }
 
   /** Converts user-supplied paths (cwd-relative, absolute or root-relative) to index paths. */

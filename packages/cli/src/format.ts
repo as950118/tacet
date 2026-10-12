@@ -1,4 +1,4 @@
-import { groupErrors, pagesByApi } from "@tacet-api/core";
+import { describeUsage, groupErrors, pagesByApi } from "@tacet-api/core";
 import type {
   ApiImpact,
   ChangeReport,
@@ -10,6 +10,7 @@ import type {
   ImpactSummary,
   Ontology,
   SearchHit,
+  UsageReport,
 } from "@tacet-api/core";
 import type { ExtractBackendResult, IndexFrontendResult } from "./workspace.js";
 
@@ -37,6 +38,8 @@ export function formatBackendResult(r: ExtractBackendResult, outPath?: string): 
     `  Endpoints:  ${r.endpoints} (${r.changedEndpoints.length} added, changed or removed)`,
     `  DTOs:       ${r.dtos}`,
     `  Enums:      ${r.enums}`,
+    `  Service calls (Feign / @HttpExchange): ${r.serviceCalls}`,
+    `  Gateway routes: ${r.gatewayRoutes}`,
     `  Warnings:   ${r.warnings.length}`,
   ];
   for (const w of r.warnings) lines.push(`    - ${w}`);
@@ -253,3 +256,34 @@ export function formatChangeReport(report: ChangeReport | VerifiedChangeReport):
   return lines.join("\n");
 }
 
+
+export function formatUsage(report: UsageReport): string {
+  const t = report.totals;
+  const lines = [
+    `Endpoint usage — frontends: ${report.frontends.map((f) => f.name).join(", ")}`,
+    `  Used by a frontend:            ${t.frontend}`,
+    `  Used only by backend services: ${t.service}`,
+    `  Only an uncalled client method: ${t.clientDeclared}`,
+    `  Unused:                        ${t.unused}${report.gatewayRoutes > 0 ? ` (${t.unusedNotRouted} not reachable through a gateway route)` : ""}`,
+    `  Total:                         ${t.endpoints}`,
+  ];
+  for (const f of report.frontends) {
+    if (f.unresolvedCalls > 0) lines.push(`  ! ${f.name}: ${f.unresolvedCalls} API calls with unresolved URLs may use some of these`);
+  }
+  const unused = report.endpoints.filter((e) => e.usage === "unused" || e.usage === "client-declared");
+  if (unused.length) lines.push("");
+  let controller = "";
+  for (const e of [...unused].sort((a, b) => a.controller.localeCompare(b.controller) || a.path.localeCompare(b.path))) {
+    if (e.controller !== controller) {
+      controller = e.controller;
+      lines.push(`${controller.split(".").pop()}  ${e.location.file}`);
+    }
+    const notes = [
+      e.usage === "client-declared" ? describeUsage(e.usage) : null,
+      e.otherMethodsUsed.length ? `${e.otherMethodsUsed.join("/")} used` : null,
+      e.routes !== null && e.routes.length === 0 ? "no gateway route" : null,
+    ].filter(Boolean);
+    lines.push(`  ${e.method.padEnd(6)} ${e.path}${notes.length ? `  [${notes.join(", ")}]` : ""}`);
+  }
+  return lines.join("\n");
+}

@@ -193,6 +193,14 @@ nested type / wildcard import / static import 규칙으로 프로젝트 타입�
 - `@JsonValue` getter/field가 있는 클래스는 그 값의 타입으로 직렬화된다(`ResourceData<T> { @JsonValue List<T> getData() }` → 배열).
 - 알려진 한계: 전역 Jackson 설정(`spring.jackson.property-naming-strategy`), `@JsonUnwrapped`, `@JsonValue` enum(warning), Kotlin 소스.
 
+**서비스 간 호출 · 설정**
+- `@FeignClient` interface(Spring MVC mapping 어노테이션, `url`/`name`, `path`)와 `@HttpExchange` interface(`@Get/Post/...Exchange`)의
+  메서드를 `serviceCalls`로 추출한다. 다른 파일에서 그 이름의 메서드 호출(또는 메서드 참조)이 없으면 `referenced: false`
+  (이름 기준이라 "확실히 안 쓰인다"만 말할 수 있다).
+- `src/main/resources` 아래 `*.yml|*.yaml|*.properties`를 줄 단위로 읽어 `server.servlet.context-path`(`${X:/api}`는 기본값)와
+  Spring Cloud Gateway 라우트(`id`, `uri`, `Path=`, `RewritePath=`, `StripPrefix=`, `PrefixPath=`, 펼친 `name`/`args` 형식,
+  `.properties`의 `routes[i]`)를 `contextPaths`, `gatewayRoutes`로 넣는다. Java DSL(`RouteLocatorBuilder`) 라우트는 읽지 않는다.
+
 ## 6. API ↔ TypeScript 연결 방법 (Phase 3, 구현됨)
 
 `core/src/analysis/link.ts` — `EndpointLinker`
@@ -218,6 +226,7 @@ routes(id, file, json)
 endpoints(id, file, method, path, json)
 dtos(id, file, name, json)
 enums(id, file, name, json)
+service_calls(id, file, method, path, json)  -- Feign / @HttpExchange 요청 (gatewayRoutes, contextPaths는 index_meta backend.*)
 
 -- 관계 (위 사실에서 파생, frontend/backend가 index될 때마다 한 transaction으로 다시 씀)
 entities(id, class, label, file, line, status, json)              -- Page, Component, Hook, ApiClient, Function, Endpoint, Controller, Dto, DtoField, Enum, File
@@ -234,6 +243,12 @@ related_pages(page, related, shared, apis)                        -- 공통 API�
 기준은 index될 때마다 저장된 사실로 다시 계산되고(`index_meta.relations.commonApis`), 다른 config로 조회하면 관계 테이블을
 다시 만든다. HTML 탐색기는 같은 계산을 브라우저에서 다시 할 수 있어서, 보는 사람별 설정(localStorage)을 적용해도 index DB는
 바뀌지 않는다: 프로젝트 기준은 팀·CI가 공유하는 config에, 개인화는 각자의 브라우저에 둔다.
+
+**미사용 API** (`analyzeUsage`, `tacet unused`): 여러 frontend index(같은 backend)의 연결된 호출과, `serviceCalls`를
+`EndpointLinker.linkServiceCall`(선언된 path, 그리고 context path를 뗀 path로 시도; frontend의 base path·rewrite는 적용하지
+않음)로 연결한 결과를 endpoint별로 합친다. gateway 노출 여부는 라우트의 `Path` 패턴에 StripPrefix → RewritePath(Java 정규식을
+JS로, `${name}`/`$\{name}` 치환) → PrefixPath를 적용하고 context path를 뗀 패턴과 endpoint path(경로변수 정규식 제약 포함)를
+비교해 정한다. Endpoint entity에는 `attributes.serviceCallers`가 붙는다.
 
 관계 테이블은 ontology(`buildOntology`, 모든 frontend 함수 포함)를 그대로 저장한 것이다. `tacet relations`, MCP `relations`,
 Python `relations()`가 이 테이블을 읽고, SQL로 직접 조회할 수도 있다.
