@@ -12,3 +12,5 @@ python
 scripts
 web
 packages/extractor-java/jvm
+.env
+.env.*
