@@ -36,6 +36,9 @@ tacet projects
 ```
 
 - 다시 실행하면 바뀐 레코드만 다시 쓴다.
+- `index`·`extract-backend`가 끝나면 페이지↔API 맵과 API 사용 현황을 미리 계산해 `snapshots` 테이블에 저장한다. 배포된 API는 이 결과를 그대로 돌려준다. CMP400 기준 응답 시간은 12초에서 0.1~0.4초로, 응답 크기는 1.6MB에서 gzip 100KB로 줄었다.
+  - 이전 버전으로 넣은 데이터는 다시 인덱싱하지 않고 `tacet -p <name> snapshot`만 실행하면 된다.
+  - 인덱싱 상태가 결과와 맞지 않으면 API가 직접 계산한다. 느리지만 틀린 결과를 주지는 않는다.
 - 기존 `.tacet/index.db`(SQLite)를 복사하는 기능은 없다. 위 명령으로 Supabase에 다시 인덱싱한다.
 - 프로젝트를 지우려면 로컬에서 같은 `TACET_INDEX`로 `tacet serve`를 띄우고 `DELETE /projects/<p>`를 호출한다(배포된 API는 읽기 전용).
 
@@ -83,6 +86,10 @@ docker run -p 8000:8000 -e TACET_INDEX=... -e TACET_API_TOKEN=... tacet-api
 | `TACET_API_TOKEN` | Render의 `TACET_API_TOKEN`과 같은 값 |
 | `DASHBOARD_PASSWORD` | 대시보드 전체 HTTP Basic 인증. 비워두면 URL을 아는 누구나 볼 수 있다 |
 | `DASHBOARD_USER` | 선택. 기본값 `tacet` |
+
+대시보드는 결과를 Vercel 캐시에 최대 10분 동안 보관한다. 다시 열 때는 수십 ms 안에 뜨고, Render가 잠들어 있어도 기다리지 않는다.
+- 다시 인덱싱했다면 프로젝트 화면의 **새로고침** 버튼을 눌러 바로 반영한다.
+- `web/vercel.json`은 함수 리전을 Render와 같은 Singapore(`sin1`)로 고정한다.
 
 대시보드 기능:
 

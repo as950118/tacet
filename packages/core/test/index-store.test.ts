@@ -202,3 +202,25 @@ describe("index databases", () => {
     expect(redactLocation(".tacet/index.db")).toBe(".tacet/index.db");
   });
 });
+
+describe("snapshots", () => {
+  it("stores one snapshot per project and kind, replaced on write and removed with the project", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tacet-snapshot-"));
+    try {
+      const db = await openIndexDatabase(join(dir, "index.db"));
+      const a = db.project("a");
+      const b = db.project("b");
+      expect(await a.readSnapshot("pages")).toBeNull();
+      await a.writeSnapshot("pages", "f1", "[1]");
+      await a.writeSnapshot("pages", "f2", "[2]");
+      await b.writeSnapshot("pages", "f1", "[3]");
+      expect(await a.readSnapshot("pages")).toMatchObject({ fingerprint: "f2", json: "[2]" });
+      await a.clear();
+      expect(await a.readSnapshot("pages")).toBeNull();
+      expect((await b.readSnapshot("pages"))?.json).toBe("[3]");
+      await db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

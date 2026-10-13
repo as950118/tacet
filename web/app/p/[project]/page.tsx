@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { PagesView, type PageRow } from "@/components/PagesView";
-import { UnusedTable, type EndpointRow } from "@/components/UnusedTable";
-import { projectPath, tacet, TacetApiError, type IndexStatus, type PageApis, type UsageReport } from "@/lib/tacet";
+import { refreshProject } from "@/app/actions";
+import { PagesView } from "@/components/PagesView";
+import { UnusedTable } from "@/components/UnusedTable";
+import { getPages, getStatus, getUsage } from "@/lib/data";
+import { TacetApiError, type IndexStatus } from "@/lib/tacet";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +27,7 @@ export default async function ProjectPage({
 
   let status: IndexStatus;
   try {
-    status = await tacet<IndexStatus>(projectPath(project));
+    status = await getStatus(project);
   } catch (err) {
     if (err instanceof TacetApiError && err.status === 404) notFound();
     throw err;
@@ -36,7 +38,12 @@ export default async function ProjectPage({
       <div className="muted">
         <Link href="/">프로젝트</Link> /
       </div>
-      <h1>{project}</h1>
+      <div className="title-row">
+        <h1>{project}</h1>
+        <form action={refreshProject.bind(null, project)}>
+          <button type="submit" title="다시 인덱싱한 뒤 최신 결과를 받아옵니다">새로고침</button>
+        </form>
+      </div>
       <div className="muted mono">
         {status.frontend?.rootDir ?? "frontend 없음"} · {status.backend?.rootDir ?? "backend 없음"}
       </div>
@@ -64,21 +71,7 @@ async function ApisTab({ project, hasBackend }: { project: string; hasBackend: b
   if (!hasBackend) {
     return <div className="panel">backend가 인덱싱되지 않았습니다. 로컬에서 <code>tacet extract-backend</code>를 실행해 주세요.</div>;
   }
-  const report = await tacet<UsageReport>(projectPath(project, "/unused?all=true"));
-  // Only what the table shows: the full report is several MB for large backends.
-  const rows: EndpointRow[] = report.endpoints.map((e) => ({
-    usage: e.usage,
-    method: e.method,
-    path: e.path,
-    controller: e.controller.split(".").pop() ?? e.controller,
-    handler: e.handler,
-    file: e.location.file,
-    line: e.location.line,
-    otherMethodsUsed: e.otherMethodsUsed,
-    routes: e.routes,
-    callers: e.frontends.reduce((n, f) => n + f.calls, 0),
-  }));
-  const t = report.totals;
+  const { totals: t, unresolvedCalls, rows } = await getUsage(project);
   return (
     <>
       <div className="stats">
@@ -88,10 +81,9 @@ async function ApisTab({ project, hasBackend }: { project: string; hasBackend: b
         <div className="stat"><span className="muted">client 선언만</span><b>{t.clientDeclared}</b></div>
         <div className="stat"><span className="muted">미사용</span><b>{t.unused}</b></div>
       </div>
-      {report.frontends.some((f) => f.unresolvedCalls > 0) && (
+      {unresolvedCalls > 0 && (
         <p className="muted">
-          URL을 정적으로 알 수 없는 호출이{" "}
-          {report.frontends.reduce((n, f) => n + f.unresolvedCalls, 0)}건 있어, 일부 &quot;미사용&quot;은 실제로 쓰일 수 있습니다.
+          URL을 정적으로 알 수 없는 호출이 {unresolvedCalls}건 있어, 일부 &quot;미사용&quot;은 실제로 쓰일 수 있습니다.
         </p>
       )}
       <UnusedTable project={project} rows={rows} />
@@ -100,13 +92,5 @@ async function ApisTab({ project, hasBackend }: { project: string; hasBackend: b
 }
 
 async function PagesTab({ project }: { project: string }) {
-  const pages = await tacet<PageApis[]>(projectPath(project, "/pages"));
-  const rows: PageRow[] = pages.map((p) => ({
-    page: p.page,
-    route: p.route,
-    component: p.component,
-    file: p.file,
-    apis: p.apis.map((a) => ({ api: a.apiKey, fields: a.fields.length, common: Boolean(a.common), status: a.status })),
-  }));
-  return <PagesView project={project} pages={rows} />;
+  return <PagesView project={project} pages={await getPages(project)} />;
 }

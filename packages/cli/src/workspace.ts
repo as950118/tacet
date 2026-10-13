@@ -183,6 +183,12 @@ export interface PageApisQuery {
   api?: string;
 }
 
+/** Results computed at index time: every page's APIs, and every endpoint's usage (when a backend is indexed). */
+export type SnapshotKind = "pages" | "usage";
+
+/** Bumped when what a snapshot holds changes shape, so older snapshots are recomputed instead of served. */
+const SNAPSHOT_FORMAT = 1;
+
 export interface IndexStatus {
   indexPath: string;
   project: string;
@@ -209,6 +215,8 @@ export class TacetWorkspace {
   private database: Promise<IndexDatabase> | null;
   private ownsDatabase: boolean;
   private frontendProject: TypeScriptProject | null = null;
+  /** Parsed snapshots, kept while the index they were computed from is unchanged. */
+  private readonly snapshots = new Map<SnapshotKind, { fingerprint: string; value: unknown }>();
 
   /**
    * @param index a SQLite file path or a `postgres://` URL (tables go to the `tacet` schema, or `?schema=name`)
@@ -386,6 +394,49 @@ export class TacetWorkspace {
     if ((await store.getMeta("language")) === null) return;
     const model = await this.modelFrom(store);
     await store.writeRelations(buildOntology(model, { includeUnrelated: true }), model.config);
+    await this.writeSnapshots(store, model);
+  }
+
+  /**
+   * Computes the results readers ask for most (every page's APIs, every endpoint's usage) and stores them, so an
+   * API server answers with a single read instead of rebuilding the model. Done after every index write; call it
+   * directly for an index written by an older version.
+   */
+  async refreshSnapshots(): Promise<SnapshotKind[]> {
+    return this.withStore(async (store) => this.writeSnapshots(store, await this.modelFrom(store)));
+  }
+
+  private async writeSnapshots(store: IndexStore, model: ProjectModel): Promise<SnapshotKind[]> {
+    const fingerprint = await this.fingerprint(store, model.config);
+    const kinds: SnapshotKind[] = ["pages"];
+    await store.writeSnapshot("pages", fingerprint, JSON.stringify(buildOntology(model, { includeFiles: false }).pages));
+    if (model.backend) {
+      const usage = analyzeUsage([{ name: basename(model.frontend.rootDir), model }]);
+      await store.writeSnapshot("usage", fingerprint, JSON.stringify(usage));
+      kinds.push("usage");
+    }
+    this.snapshots.clear();
+    return kinds;
+  }
+
+  /** The index state a snapshot belongs to: when each side was indexed, and the config results depend on. */
+  private async fingerprint(store: IndexStore, config: TacetConfig): Promise<string> {
+    return JSON.stringify([SNAPSHOT_FORMAT, await store.getMeta("generatedAt"), await store.getMeta("backend.generatedAt"), config]);
+  }
+
+  /** A stored snapshot still matching the index (and this workspace's config), or undefined. */
+  private async snapshot<T>(kind: SnapshotKind): Promise<T | undefined> {
+    return this.withStore(async (store) => {
+      const config = this.configPath ? loadConfig(this.configPath) : await store.readConfig();
+      const fingerprint = await this.fingerprint(store, config);
+      const kept = this.snapshots.get(kind);
+      if (kept?.fingerprint === fingerprint) return kept.value as T;
+      const stored = await store.readSnapshot(kind);
+      if (stored?.fingerprint !== fingerprint) return undefined;
+      const value = JSON.parse(stored.json) as T;
+      this.snapshots.set(kind, { fingerprint, value });
+      return value;
+    });
   }
 
   /** Queries the stored relations: a page's APIs, an API's pages, or relations by subject / predicate / object. */
@@ -440,14 +491,15 @@ export class TacetWorkspace {
 
   /** Which page uses which API: every page, pages matching `page`, or (with `api`) the pages of each matching API. */
   async pageApis(query: PageApisQuery = {}): Promise<PageApis[] | ApiPages[]> {
-    const ontology = await this.ontology({ includeFiles: false });
     if (query.api) {
+      const ontology = await this.ontology({ includeFiles: false });
       const q = query.api.toLowerCase();
       return pagesByApi(ontology).filter((row) => row.apiKey.toLowerCase().includes(q));
     }
-    if (!query.page) return ontology.pages;
+    const pages = (await this.snapshot<PageApis[]>("pages")) ?? (await this.ontology({ includeFiles: false })).pages;
+    if (!query.page) return pages;
     const q = query.page.toLowerCase();
-    return ontology.pages.filter((p) => (p.route ?? "").toLowerCase().includes(q) || p.component.toLowerCase().includes(q));
+    return pages.filter((p) => (p.route ?? "").toLowerCase().includes(q) || p.component.toLowerCase().includes(q));
   }
 
   /** What the index holds for this project. */
@@ -495,6 +547,10 @@ export class TacetWorkspace {
    * backend services through Feign / @HttpExchange clients.
    */
   async usage(otherIndexes: string[] = [], otherProjects: string[] = []): Promise<UsageReport> {
+    if (!otherIndexes.length && !otherProjects.length) {
+      const stored = await this.snapshot<UsageReport>("usage");
+      if (stored) return stored;
+    }
     const others = [
       ...otherIndexes.map((index) => ({ ws: new TacetWorkspace(index), owned: true })),
       ...otherProjects.map((project) => ({ ws: this.forProject(project), owned: false })),

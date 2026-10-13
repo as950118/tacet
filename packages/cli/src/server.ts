@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve, sep } from "node:path";
+import { gzipSync } from "node:zlib";
 import {
   attachGraph,
   findEntities,
@@ -562,12 +563,18 @@ function send(res: ServerResponse, status: number, value: unknown): void {
     return;
   }
   const raw = value as Partial<Raw>;
-  if (typeof raw.raw === "string" && typeof raw.contentType === "string") {
-    res.writeHead(status, { "Content-Type": raw.contentType }).end(raw.raw);
+  const isRaw = typeof raw.raw === "string" && typeof raw.contentType === "string";
+  const body = isRaw ? raw.raw! : JSON.stringify(value);
+  const headers: Record<string, string> = { "Content-Type": isRaw ? raw.contentType! : "application/json; charset=utf-8" };
+  // Page maps and usage reports are megabytes of repetitive JSON: gzip shrinks them about 20 times.
+  if (body.length >= GZIP_MIN && /\bgzip\b/.test(String(res.req?.headers["accept-encoding"] ?? ""))) {
+    res.writeHead(status, { ...headers, "Content-Encoding": "gzip", Vary: [res.getHeader("Vary"), "Accept-Encoding"].filter(Boolean).join(", ") }).end(gzipSync(body, { level: 4 }));
     return;
   }
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify(value));
+  res.writeHead(status, headers).end(body);
 }
+
+const GZIP_MIN = 2048;
 
 function canonical(path: string): string {
   return existsSync(path) ? realpathSync(path) : path;

@@ -25,6 +25,9 @@ export const RELATION_TABLES = ["entities", "relations", "page_apis", "related_p
 
 export const META_TABLE = "index_meta";
 
+/** Query results computed ahead (e.g. the page ↔ API map), so readers need not rebuild the model. */
+export const SNAPSHOT_TABLE = "snapshots";
+
 /** Rows of `index_meta` with this project hold database-wide values (the schema version). */
 export const GLOBAL_PROJECT = "";
 
@@ -71,6 +74,11 @@ CREATE TABLE IF NOT EXISTS page_apis (
 CREATE TABLE IF NOT EXISTS related_pages (
   project ${T} NOT NULL, page ${T} NOT NULL, related ${T} NOT NULL, shared INTEGER NOT NULL, apis TEXT NOT NULL,
   PRIMARY KEY (project, page, related));
+
+-- Results computed at index time and served as they are; \`fingerprint\` says which index state they belong to.
+CREATE TABLE IF NOT EXISTS snapshots (
+  project ${T} NOT NULL, kind ${T} NOT NULL, fingerprint TEXT NOT NULL, generated_at TEXT NOT NULL, json TEXT NOT NULL,
+  PRIMARY KEY (project, kind));
 
 CREATE INDEX IF NOT EXISTS idx_entities_class ON entities(project, class);
 CREATE INDEX IF NOT EXISTS idx_entities_label ON entities(project, label);
