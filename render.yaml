@@ -1,0 +1,21 @@
+# Render Blueprint for the Tacet HTTP API (read-only; the index is filled from a local CLI). See DEPLOY.md.
+services:
+  - type: web
+    name: tacet-api
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Session pooler URL of the index database, e.g. Supabase (port 5432, not 6543).
+      - key: TACET_INDEX
+        sync: false
+      # Bearer token for every route but /health and /openapi.json; copy it to the dashboard's TACET_API_TOKEN.
+      - key: TACET_API_TOKEN
+        generateValue: true
+      # The free instance has 512 MB; a large project (7.5k frontend files) peaks around 410 MB with this heap cap.
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=300

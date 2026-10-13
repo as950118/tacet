@@ -1,21 +1,21 @@
-# 배포: Supabase + Koyeb + Vercel
+# 배포: Supabase + Render + Vercel
 
 ```
  로컬 (tacet index / extract-backend) ──▶ Supabase (PostgreSQL, index DB)
                                                  ▲
- Vercel (web/, 대시보드) ──서버 측──▶ Koyeb (tacet serve --read-only) ─┘
+ Vercel (web/, 대시보드) ──서버 측──▶ Render (tacet serve --read-only) ┘
 ```
 
 - **데이터는 로컬에서 만든다.** 소스 코드와 Java는 로컬에만 있으면 된다. CLI가 Supabase에 직접 쓴다.
-- **Koyeb**은 조회 API만 제공한다. 이미지 기본값이 `TACET_READ_ONLY=true`라서 인덱싱·삭제 요청은 403으로 거부한다.
-- **Vercel** 대시보드는 서버에서 Koyeb을 호출한다. API 토큰은 브라우저로 가지 않는다.
+- **Render**는 조회 API만 제공한다. 이미지 기본값이 `TACET_READ_ONLY=true`라서 인덱싱·삭제 요청은 403으로 거부한다.
+- **Vercel** 대시보드는 서버에서 Render의 API를 호출한다. API 토큰은 브라우저로 가지 않는다.
 
 ## 1. Supabase
 
 1. 프로젝트를 만든 뒤 **Connect → Session pooler** 연결 문자열을 복사한다.
    - 형식: `postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`
    - **Transaction pooler(6543)는 쓰지 않는다.** tacet은 연결마다 `search_path`를 지정하는데, transaction pooler에서는 이 설정이 유지되지 않는다. 6543 포트를 쓰면 시작할 때 오류를 낸다.
-   - Direct 연결은 IPv6 전용이라 Koyeb이나 일부 로컬 네트워크에서 접속되지 않을 수 있다.
+   - Direct 연결은 IPv6 전용이라 Render 같은 호스트나 일부 로컬 네트워크에서 접속되지 않을 수 있다.
 2. tacet 테이블은 `tacet` 스키마에 생긴다(`?schema=` 파라미터로 변경 가능). Supabase가 쓰는 `public` 스키마와 섞이지 않는다.
 3. **SSL:** pg 8.x는 `sslmode=require`를 인증서 검증(verify-full)으로 처리한다. Supabase 인증서는 Supabase 자체 CA로 서명되어 있어, 그대로 쓰면 검증에 실패한다. 둘 중 하나를 고른다.
    - 권장: Database Settings → SSL Configuration에서 CA 인증서를 받아 `TACET_PG_CA` 환경변수에 PEM 내용 그대로 넣는다. 한 줄로 넣어야 하면 줄바꿈을 `\n`으로 바꿔도 된다. 이 변수가 있으면 URL의 `sslmode`·`sslrootcert`는 무시된다.
@@ -37,33 +37,34 @@ tacet projects
 
 - 다시 실행하면 바뀐 레코드만 다시 쓴다.
 - 기존 `.tacet/index.db`(SQLite)를 복사하는 기능은 없다. 위 명령으로 Supabase에 다시 인덱싱한다.
-- 프로젝트를 지우려면 로컬에서 같은 `TACET_INDEX`로 `tacet serve`를 띄우고 `DELETE /projects/<p>`를 호출한다(Koyeb은 읽기 전용).
+- 프로젝트를 지우려면 로컬에서 같은 `TACET_INDEX`로 `tacet serve`를 띄우고 `DELETE /projects/<p>`를 호출한다(배포된 API는 읽기 전용).
 
-## 3. Koyeb (API)
+## 3. Render (API)
 
-**Create Web Service → GitHub** → 이 저장소를 선택한다.
+저장소 루트의 `render.yaml`(Blueprint)이 서비스 설정을 담고 있다. 내용은 다음과 같다.
+- Docker 빌드, free 플랜, Singapore 리전
+- health check `/health`
+- `main` 브랜치에 push되면 자동 배포
 
-| 항목 | 값 |
-|---|---|
-| Builder | **Dockerfile** (저장소 루트 `Dockerfile`) |
-| Exposed port | `8000` (HTTP), Route `/` |
-| Health check | HTTP `GET /health`, port 8000 |
-| Instance | 가장 작은 인스턴스로 충분. 대형 프로젝트의 `/unused`·`/pages`는 요청할 때 계산하므로 메모리 512MB 이상 권장 |
+1. **New → Blueprint** → 이 저장소를 연결한다.
+2. 입력란에 `TACET_INDEX`(1단계 Session pooler URL)를 넣는다. 다른 값은 Blueprint가 정한다.
+   - `TACET_API_TOKEN`: 자동으로 생성된다. 서비스의 Environment 탭에서 복사해 Vercel에 넣는다.
+   - `NODE_OPTIONS=--max-old-space-size=300`: free 인스턴스 메모리가 512MB이기 때문이다. 파일 7.5k개 규모의 프로젝트에서 최대 약 410MB를 쓴다.
+   - SSL을 검증하려면 `TACET_PG_CA`를 추가한다. 넣지 않으면 URL의 `sslmode=no-verify`를 쓴다.
+3. 포트는 Render가 주는 `$PORT`를 서버가 그대로 쓴다.
 
-환경변수는 모두 **Secret**으로 넣는다.
+**Free 플랜 제약:** 15분 동안 요청이 없으면 서비스가 잠든다. 첫 요청은 깨어나는 데 1분 정도 걸리고, 대시보드도 그동안 기다린다.
 
-| 이름 | 값 |
-|---|---|
-| `TACET_INDEX` | 1단계의 Session pooler URL |
-| `TACET_PG_CA` | CA 인증서 PEM(또는 URL에 `sslmode=no-verify`) |
-| `TACET_API_TOKEN` | `openssl rand -hex 32`로 만든 임의 문자열. 0.0.0.0에서 띄우므로 반드시 설정한다 |
+대형 프로젝트의 `/unused`·`/pages`는 요청할 때 계산한다. 그래서 첫 조회는 5~10초 걸린다. 이후 같은 프로젝트를 조회할 때는 메모리에 남은 모델을 다시 쓴다.
 
 배포 후 확인:
 
 ```bash
-curl https://<app>.koyeb.app/health                                   # {"status":"ok","readOnly":true,...}
-curl -H "Authorization: Bearer $TOKEN" https://<app>.koyeb.app/projects
+curl https://tacet-api.onrender.com/health                                   # {"status":"ok","readOnly":true,...}
+curl -H "Authorization: Bearer $TOKEN" https://tacet-api.onrender.com/projects
 ```
+
+Docker 이미지라서 다른 호스트(Fly.io, Railway, Koyeb, Cloud Run 등)에서도 같은 환경변수로 실행된다.
 
 로컬에서 이미지를 확인하려면:
 
@@ -78,8 +79,8 @@ docker run -p 8000:8000 -e TACET_INDEX=... -e TACET_API_TOKEN=... tacet-api
 
 | 환경변수 | 값 |
 |---|---|
-| `TACET_API_URL` | `https://<app>.koyeb.app` |
-| `TACET_API_TOKEN` | Koyeb과 같은 토큰 |
+| `TACET_API_URL` | `https://tacet-api.onrender.com`(Render가 준 URL) |
+| `TACET_API_TOKEN` | Render의 `TACET_API_TOKEN`과 같은 값 |
 | `DASHBOARD_PASSWORD` | 대시보드 전체 HTTP Basic 인증. 비워두면 URL을 아는 누구나 볼 수 있다 |
 | `DASHBOARD_USER` | 선택. 기본값 `tacet` |
 
