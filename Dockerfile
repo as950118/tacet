@@ -1,4 +1,4 @@
-# Tacet HTTP API (`tacet serve`), read-only over an index the CLI fills from elsewhere, e.g. PostgreSQL / Supabase.
+# Tacet HTTP API (`tacet serve`; Render: render.yaml), read-only over an index the CLI fills from elsewhere, e.g. PostgreSQL / Supabase.
 #   docker build -t tacet-api .
 #   docker run -p 8000:8000 -e TACET_INDEX=postgresql://… -e TACET_API_TOKEN=… tacet-api
 

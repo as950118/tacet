@@ -81,5 +81,5 @@ jobs:
           npm run build
         env:
           TACET_API_URL: http://localhost:4318
-      - name: API image (Dockerfile, Koyeb)
+      - name: API image (Dockerfile, Render)
         run: docker build -t tacet-api .

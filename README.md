@@ -431,7 +431,7 @@ curl -H "Authorization: Bearer $TACET_API_TOKEN" localhost:4318/projects/admin/p
 
 - 인덱싱 엔드포인트는 서버의 경로를 읽으므로 `--allow-dir`(기본: 현재 디렉터리) 안의 경로만 받는다. 같은 프로젝트의 쓰기는 순서대로 처리된다.
 - `--read-only`(또는 `TACET_READ_ONLY=true`)면 조회 라우트만 연다. 인덱싱·삭제는 403으로 거부한다. 데이터를 다른 곳(로컬 CLI, CI)에서 넣는 공개 서버용이다.
-- 배포(Supabase + Koyeb + Vercel 대시보드 `web/`)는 [DEPLOY.md](./DEPLOY.md) 참고.
+- 배포(Supabase + Render + Vercel 대시보드 `web/`)는 [DEPLOY.md](./DEPLOY.md) 참고.
 - 브라우저에서 호출하려면 `--cors <origin>`. 라이브러리로는 `createTacetApiServer()`(`@tacet-api/cli`)의 `handle(req, res)`를 기존 Node 서버에 붙일 수 있다.
 
 ### tacet.config.json
