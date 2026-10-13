@@ -79,6 +79,9 @@ packages/
         ├── server.ts      HTTP API (tacet serve): route 표 하나로 처리와 OpenAPI 문서를 만든다
         ├── program.ts     커맨드 정의
         └── format.ts      텍스트 출력
+
+web/                       Next.js 대시보드 (Vercel): 서버에서 HTTP API를 호출해 프로젝트·API 사용 현황·페이지↔API를 보여준다
+Dockerfile                 HTTP API 이미지 (Koyeb 등, 기본 read-only). 배포 구성은 DEPLOY.md
 ```
 
 `packages/extractor-java/`는 두 부분으로 되어 있다: `jvm/`(Gradle, JavaParser → fat JAR)과 이를 실행하는

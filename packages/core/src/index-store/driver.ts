@@ -120,14 +120,51 @@ async function openPostgres(location: string): Promise<SqlDriver> {
   url.searchParams.delete("schema");
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) throw new Error(`Invalid PostgreSQL schema name: ${schema}`);
 
+  // A transaction pooler (Supabase's port 6543, PgBouncer in transaction mode) hands each statement to whichever
+  // server connection is free, so the schema set per connection below would not stick.
+  if (/\.pooler\.supabase\.com$/i.test(url.hostname) && url.port === "6543") {
+    throw new Error(
+      `${redactLocation(location)} is Supabase's transaction pooler: use the session pooler (same host, port 5432)`,
+    );
+  }
+  // A CA as PEM text ($TACET_PG_CA), for hosts like Koyeb where no certificate file can be shipped next to the URL.
+  const ca = process.env.TACET_PG_CA?.replace(/\\n/g, "\n");
+  if (ca) for (const key of ["sslmode", "sslrootcert", "uselibpqcompat"]) url.searchParams.delete(key);
+
   const pool = new pg.Pool({
     connectionString: url.toString(),
-    options: `-c search_path=${schema}`,
+    ...(ca ? { ssl: { ca, rejectUnauthorized: true } } : {}),
     // A CLI run must not wait for idle connections to time out before exiting.
     allowExitOnIdle: true,
   });
   // An idle connection dropped by the server must not crash the process; the pool reconnects on next use.
   pool.on("error", () => undefined);
+  // The schema is set per connection rather than with the `options` startup parameter, which poolers (Supavisor,
+  // PgBouncer) drop.
+  const prepared = new WeakSet<object>();
+  const acquire = async () => {
+    const conn = await pool.connect();
+    if (!prepared.has(conn)) {
+      try {
+        await conn.query(`SET search_path TO ${schema}`);
+      } catch (err) {
+        conn.release(err as Error);
+        throw err;
+      }
+      prepared.add(conn);
+    }
+    return conn;
+  };
+  const pooled: PgQueryable = {
+    query: async (sql, params) => {
+      const conn = await acquire();
+      try {
+        return await conn.query(sql, params);
+      } finally {
+        conn.release();
+      }
+    },
+  };
   try {
     await pool.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
   } catch (err) {
@@ -148,7 +185,7 @@ async function openPostgres(location: string): Promise<SqlDriver> {
       },
       transaction: async (work, lock) => {
         if (inTransaction) return work(driver);
-        const conn = await pool.connect();
+        const conn = await acquire();
         try {
           await conn.query("BEGIN");
           // Released at COMMIT / ROLLBACK; serializes writers of one project across processes and machines.
@@ -169,5 +206,5 @@ async function openPostgres(location: string): Promise<SqlDriver> {
     };
     return driver;
   };
-  return over(pool, false);
+  return over(pooled, false);
 }

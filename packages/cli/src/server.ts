@@ -32,6 +32,8 @@ export interface TacetApiServerOptions {
   allowDirs?: string[];
   /** Value for Access-Control-Allow-Origin, for dashboards in a browser. */
   cors?: string;
+  /** Only the query routes: no indexing or deleting, e.g. on a host the index is filled into from elsewhere. */
+  readOnly?: boolean;
 }
 
 export interface TacetApiServer {
@@ -139,7 +141,12 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       global: true,
       tag: "server",
       summary: "Liveness, version and index database",
-      handle: async () => ({ status: "ok", version: VERSION, index: { dialect: database.dialect, location: database.location } }),
+      handle: async () => ({
+        status: "ok",
+        version: VERSION,
+        readOnly: Boolean(options.readOnly),
+        index: { dialect: database.dialect, location: database.location },
+      }),
     },
     {
       method: "GET",
@@ -369,7 +376,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     },
   ];
 
-  const openapi = openApiDocument(routes, Boolean(options.token));
+  const openapi = openApiDocument(options.readOnly ? routes.filter((r) => !r.write) : routes, Boolean(options.token));
 
   const authorized = (req: IncomingMessage): boolean => {
     if (!options.token) return true;
@@ -393,6 +400,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       if (req.method === "GET" && path === "/openapi.json") return send(res, 200, openapi);
       const match = matchRoute(routes, req.method ?? "GET", path);
       if (!match) throw new HttpError(404, `No route ${req.method} ${path}; see GET /openapi.json`);
+      if (options.readOnly && match.route.write) throw new HttpError(403, "This server is read-only: index with the CLI");
       if (match.route.path !== "/health" && !authorized(req)) {
         res.setHeader("WWW-Authenticate", "Bearer");
         throw new HttpError(401, "Missing or wrong bearer token");

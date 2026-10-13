@@ -148,3 +148,28 @@ describe.each(backends)("Tacet HTTP API on $name", ({ location }) => {
     expect(unused.body.endpoints.map((e: { endpoint: string }) => e.endpoint)).toContain("GET /users/summary");
   });
 });
+
+describe("Tacet HTTP API, read-only", () => {
+  it("serves queries but no indexing or deleting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tacet-api-ro-"));
+    const api = await createTacetApiServer({ index: join(dir, "index.db"), allowDirs: [fixtures], readOnly: true });
+    try {
+      const base = await api.listen(0);
+      const health = await (await fetch(`${base}/health`)).json();
+      expect(health.readOnly).toBe(true);
+      const post = await fetch(`${base}/projects/admin/frontend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dir: join(fixtures, "frontend") }),
+      });
+      expect(post.status).toBe(403);
+      expect((await fetch(`${base}/projects/admin`, { method: "DELETE" })).status).toBe(403);
+      expect((await fetch(`${base}/projects`)).status).toBe(200);
+      const openapi = await (await fetch(`${base}/openapi.json`)).json();
+      expect(Object.keys(openapi.paths)).not.toContain("/projects/{project}/frontend");
+    } finally {
+      await api.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

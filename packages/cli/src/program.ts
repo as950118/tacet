@@ -317,20 +317,23 @@ export function buildProgram(): Command {
     .option("--token <token>", "require `Authorization: Bearer <token>` ($TACET_API_TOKEN)", process.env.TACET_API_TOKEN)
     .option("--allow-dir <dirs...>", "directories the indexing endpoints may read (default: the current directory)")
     .option("--cors <origin>", "Access-Control-Allow-Origin for browser clients")
-    .action(async (opts: { port: number; host: string; token?: string; allowDir?: string[]; cors?: string }) => {
+    .option("--read-only", "only the query routes: no indexing or deleting over HTTP ($TACET_READ_ONLY=true)")
+    .action(async (opts: { port: number; host: string; token?: string; allowDir?: string[]; cors?: string; readOnly?: boolean }) => {
       if (!isLoopback(opts.host) && !opts.token) {
         throw new Error(`Listening on ${opts.host} exposes the index and indexing to the network: set --token or $TACET_API_TOKEN`);
       }
       const global = program.opts<{ index: string; config?: string }>();
+      const readOnly = opts.readOnly ?? process.env.TACET_READ_ONLY === "true";
       const api = await createTacetApiServer({
         index: global.index,
         configPath: global.config,
         token: opts.token,
         allowDirs: opts.allowDir,
         cors: opts.cors,
+        readOnly,
       });
       const url = await api.listen(opts.port, opts.host);
-      console.log(`Tacet API on ${url} (index ${api.database.location}${opts.token ? ", bearer token required" : ""})`);
+      console.log(`Tacet API on ${url} (index ${api.database.location}${opts.token ? ", bearer token required" : ""}${readOnly ? ", read-only" : ""})`);
       console.log(`  ${url}/openapi.json   ${url}/projects   ${url}/projects/<name>/pages`);
       const stop = () => void api.close().finally(() => process.exit(0));
       process.once("SIGINT", stop);
