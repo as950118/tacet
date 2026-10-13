@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/test
+.git
+.github
+.tacet
+dist-packages
+examples
+plugins
+python
+scripts
+web
+packages/extractor-java/jvm
+.env
+.env.*

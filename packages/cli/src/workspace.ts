@@ -7,10 +7,14 @@ import {
   buildOntology,
   checkContract,
   focusOntology,
+  pagesByApi,
   verifyChangeReport,
   ImpactAnalyzer,
-  IndexStore,
+  DEFAULT_PROJECT,
+  isPostgresUrl,
   loadConfig,
+  openIndexDatabase,
+  redactLocation,
   ProjectModel,
   type TacetConfig,
   type AiProvider,
@@ -19,7 +23,12 @@ import {
   type ChangeReport,
   type ContractReport,
   type FrontendIndexUpdate,
+  type IndexSummary,
+  type ApiPages,
+  type PageApis,
   type FrontendManifest,
+  type IndexDatabase,
+  type IndexStore,
   type Ontology,
   type OntologyEntity,
   type OntologyOptions,
@@ -34,6 +43,13 @@ import { changedSourceFiles, hasChangesBetween, materializeAtRef } from "./git.j
 
 export const DEFAULT_INDEX_PATH = ".tacet/index.db";
 
+export interface WorkspaceOptions {
+  /** Project inside the index database (default "default"); one database can hold many frontends. */
+  project?: string;
+  /** An already open database to use (e.g. shared by the HTTP server across projects). The workspace never closes it. */
+  database?: IndexDatabase;
+}
+
 export interface IndexFrontendOptions {
   configPath?: string;
   /** Also write the extracted manifest as JSON. */
@@ -46,6 +62,7 @@ export interface IndexFrontendOptions {
 
 export interface IndexFrontendResult extends FrontendIndexUpdate {
   indexPath: string;
+  project: string;
   frontendDir: string;
   /** The changed files the caller asked about, relative to the frontend root; null for a full index. */
   scope: string[] | null;
@@ -61,6 +78,7 @@ export interface ExtractBackendOptions {
 
 export interface ExtractBackendResult {
   indexPath: string;
+  project: string;
   endpoints: number;
   dtos: number;
   enums: number;
@@ -158,6 +176,21 @@ export interface RelationsResult {
   relatedPages: Array<{ of: string; page: string; shared: number; apis: string[] }>;
 }
 
+export interface PageApisQuery {
+  /** Pages whose route or component contains this (case-insensitive). */
+  page?: string;
+  /** APIs whose key contains this, e.g. "GET /users"; the result is then grouped by API. */
+  api?: string;
+}
+
+export interface IndexStatus {
+  indexPath: string;
+  project: string;
+  frontend: { rootDir: string; generatedAt: string } | null;
+  backend: { rootDir: string; generatedAt: string } | null;
+  summary: IndexSummary;
+}
+
 export interface CheckOptions {
   files?: string[];
   changedSince?: string;
@@ -169,11 +202,31 @@ export interface CheckOptions {
  * that changed.
  */
 export class TacetWorkspace {
+  /** The index location for display: a SQLite file path, or a PostgreSQL URL without its password. */
   readonly indexPath: string;
-  private project: TypeScriptProject | null = null;
+  readonly project: string;
+  private readonly location: string;
+  private database: Promise<IndexDatabase> | null;
+  private ownsDatabase: boolean;
+  private frontendProject: TypeScriptProject | null = null;
 
-  constructor(indexPath: string = DEFAULT_INDEX_PATH, private readonly configPath?: string) {
-    this.indexPath = resolve(indexPath);
+  /**
+   * @param index a SQLite file path or a `postgres://` URL (tables go to the `tacet` schema, or `?schema=name`)
+   */
+  constructor(index: string = DEFAULT_INDEX_PATH, private readonly configPath?: string, options: WorkspaceOptions = {}) {
+    this.location = isPostgresUrl(index) ? index : resolve(index);
+    this.indexPath = options.database?.location ?? redactLocation(this.location);
+    this.project = options.project ?? DEFAULT_PROJECT;
+    this.database = options.database ? Promise.resolve(options.database) : null;
+    this.ownsDatabase = !options.database;
+  }
+
+  /** Closes the index database (when this workspace opened it). The workspace reopens it on next use. */
+  async close(): Promise<void> {
+    const database = this.database;
+    this.database = null;
+    if (database && this.ownsDatabase) await (await database).close();
+    else if (database) this.database = database;
   }
 
   async indexFrontend(frontendDir: string, options: IndexFrontendOptions = {}): Promise<IndexFrontendResult> {
@@ -182,22 +235,22 @@ export class TacetWorkspace {
     const config = this.resolveConfig(root, options.configPath);
     const scope = this.scopeFiles(root, options.files, options.changedSince);
 
-    if (this.project?.root === root && scope) {
-      this.project.refresh(scope);
+    if (this.frontendProject?.root === root && scope) {
+      this.frontendProject.refresh(scope);
     } else {
-      this.project = TypeScriptProject.load(root, config);
+      this.frontendProject = TypeScriptProject.load(root, config);
     }
-    const manifest = this.project.extract();
+    const manifest = this.frontendProject.extract();
     if (options.manifestPath) writeJson(options.manifestPath, manifest);
 
-    const update = this.withStore((store) => {
-      store.writeConfig(config);
-      const written = store.writeManifest(manifest);
-      this.writeRelations(store);
+    const update = await this.withStore(async (store) => {
+      await store.writeConfig(config);
+      const written = await store.writeManifest(manifest);
+      await this.writeRelations(store);
       return written;
     });
-    const apis = scope ? this.apisUsedBy(scope) : [];
-    return { ...update, indexPath: this.indexPath, frontendDir: root, scope, apis };
+    const apis = scope ? await this.apisUsedBy(scope) : [];
+    return { ...update, indexPath: this.indexPath, project: this.project, frontendDir: root, scope, apis };
   }
 
   async extractBackend(backendDir: string, options: ExtractBackendOptions = {}): Promise<ExtractBackendResult> {
@@ -205,13 +258,14 @@ export class TacetWorkspace {
     if (!existsSync(root)) throw new Error(`Backend directory not found: ${root}`);
     const manifest = await new JavaExtractor({ jarPath: options.jarPath }).extract(root);
     if (options.outPath) writeJson(options.outPath, manifest);
-    const update = this.withStore((store) => {
-      const written = store.writeBackendManifest(manifest);
-      this.writeRelations(store);
+    const update = await this.withStore(async (store) => {
+      const written = await store.writeBackendManifest(manifest);
+      await this.writeRelations(store);
       return written;
     });
     return {
       indexPath: this.indexPath,
+      project: this.project,
       endpoints: update.endpoints,
       dtos: update.dtos,
       enums: manifest.enums.length,
@@ -265,20 +319,20 @@ export class TacetWorkspace {
   private async changeInputs(backendDir: string, options: AnalyzeBackendOptions): Promise<ChangeInputs> {
     const root = resolve(backendDir);
     if (!existsSync(root)) throw new Error(`Backend directory not found: ${root}`);
-    const { frontend, before, config } = this.withStore((store) => ({
-      frontend: store.readFrontendManifest(),
-      before: store.readBackendManifest(),
-      config: this.configPath ? loadConfig(this.configPath) : store.readConfig(),
+    const { frontend, before, config } = await this.withStore(async (store) => ({
+      frontend: await store.readFrontendManifest(),
+      before: await store.readBackendManifest(),
+      config: this.configPath ? loadConfig(this.configPath) : await store.readConfig(),
     }));
-    if (!frontend) throw new Error(`No frontend index in ${this.indexPath}. Run \`tacet index <frontendDir>\` first.`);
+    if (!frontend) throw this.noFrontend();
     if (!before) {
       throw new Error("No baseline backend contract in the index. Run `tacet extract-backend <dir>` on the current backend first.");
     }
     const after = await new JavaExtractor({ jarPath: options.jarPath }).extract(root);
     if (options.save) {
-      this.withStore((store) => {
-        store.writeBackendManifest(after);
-        this.writeRelations(store);
+      await this.withStore(async (store) => {
+        await store.writeBackendManifest(after);
+        await this.writeRelations(store);
       });
     }
     return { frontend, before, after, config };
@@ -287,7 +341,7 @@ export class TacetWorkspace {
   /** null when nothing under the backend directory changed between the refs. */
   private async gitChangeInputs(backendDir: string, options: DiffBackendOptions): Promise<ChangeInputs | null> {
     const root = resolve(backendDir);
-    const model = this.model();
+    const model = await this.model();
     if (!hasChangesBetween(root, options.base, options.head)) return null;
     const scratch = mkdtempSync(join(tmpdir(), "tacet-diff-"));
     try {
@@ -304,43 +358,48 @@ export class TacetWorkspace {
     }
   }
 
-  hasBackendBaseline(): boolean {
-    return this.withStore((store) => store.readBackendManifest() !== null);
+  async hasBackendBaseline(): Promise<boolean> {
+    return this.withStore(async (store) => (await store.getMeta("backend.language")) !== null);
   }
 
-  model(): ProjectModel {
+  async model(): Promise<ProjectModel> {
     return this.withStore((store) => this.modelFrom(store));
   }
 
-  private modelFrom(store: IndexStore): ProjectModel {
-    const frontend = store.readFrontendManifest();
-    if (!frontend) throw new Error(`No frontend index in ${this.indexPath}. Run \`tacet index <frontendDir>\` first.`);
-    const config = this.configPath ? loadConfig(this.configPath) : store.readConfig();
-    return new ProjectModel(frontend, store.readBackendManifest(), config);
+  private async modelFrom(store: IndexStore): Promise<ProjectModel> {
+    const frontend = await store.readFrontendManifest();
+    if (!frontend) throw this.noFrontend();
+    const config = this.configPath ? loadConfig(this.configPath) : await store.readConfig();
+    return new ProjectModel(frontend, await store.readBackendManifest(), config);
+  }
+
+  private noFrontend(): Error {
+    const project = this.project === DEFAULT_PROJECT ? "" : ` (project "${this.project}")`;
+    return new Error(`No frontend index in ${this.indexPath}${project}. Run \`tacet index <frontendDir>\` first.`);
   }
 
   /**
    * Keeps the relation tables (entities, relations, page_apis) in step with the facts: rebuilt from the
    * stored manifests after every write, with every frontend function kept (not only those leading to an API).
    */
-  private writeRelations(store: IndexStore): void {
-    if (store.readFrontendManifest() === null) return;
-    const model = this.modelFrom(store);
-    store.writeRelations(buildOntology(model, { includeUnrelated: true }), model.config);
+  private async writeRelations(store: IndexStore): Promise<void> {
+    if ((await store.getMeta("language")) === null) return;
+    const model = await this.modelFrom(store);
+    await store.writeRelations(buildOntology(model, { includeUnrelated: true }), model.config);
   }
 
   /** Queries the stored relations: a page's APIs, an API's pages, or relations by subject / predicate / object. */
-  relations(query: RelationsQuery): RelationsResult {
-    return this.withStore((store) => {
+  async relations(query: RelationsQuery): Promise<RelationsResult> {
+    return this.withStore(async (store) => {
       // A different config (e.g. --config with another commonApis rule) rebuilds the stored relations.
-      const config = this.configPath ? loadConfig(this.configPath) : store.readConfig();
-      if (!store.hasRelations() || !store.relationsBuiltWith(config)) this.writeRelations(store);
+      const config = this.configPath ? loadConfig(this.configPath) : await store.readConfig();
+      if (!(await store.hasRelations()) || !(await store.relationsBuiltWith(config))) await this.writeRelations(store);
       const entities: RelationsResult["entities"] = {};
       const note = (e: OntologyEntity | null) => {
         if (e) entities[e.id] = { class: e.class, label: e.label, file: e.file, line: e.line, status: e.status };
       };
-      const resolve = (key: string, cls?: string): string[] => {
-        const found = store.findEntitiesByKey(key, cls);
+      const resolve = async (key: string, cls?: string): Promise<string[]> => {
+        const found = await store.findEntitiesByKey(key, cls);
         if (!found.length) throw new Error(`No ${cls ?? "entity"} "${key}" in the index`);
         found.forEach(note);
         return found.map((e) => e.id);
@@ -348,22 +407,24 @@ export class TacetWorkspace {
       const pageApis: StoredPageApi[] = [];
       const relatedPages: RelationsResult["relatedPages"] = [];
       if (query.page !== undefined) {
-        for (const id of resolve(query.page, "Page")) {
-          pageApis.push(...store.pageApis({ page: id }));
-          relatedPages.push(...store.relatedPages(id).map((r) => ({ of: id, ...r })));
+        for (const id of await resolve(query.page, "Page")) {
+          pageApis.push(...(await store.pageApis({ page: id })));
+          relatedPages.push(...(await store.relatedPages(id)).map((r) => ({ of: id, ...r })));
         }
       }
       if (query.api !== undefined) {
-        const ids = store.findEntitiesByKey(query.api, "Endpoint").length ? resolve(query.api, "Endpoint") : resolve(`api:${query.api}`, "Endpoint");
-        for (const id of ids) pageApis.push(...store.pageApis({ endpoint: id }));
+        const ids = (await store.findEntitiesByKey(query.api, "Endpoint")).length
+          ? await resolve(query.api, "Endpoint")
+          : await resolve(`api:${query.api}`, "Endpoint");
+        for (const id of ids) pageApis.push(...(await store.pageApis({ endpoint: id })));
       }
       const relations: OntologyTriple[] = [];
       if (query.subject !== undefined || query.predicate !== undefined || query.object !== undefined) {
-        const subjects = query.subject !== undefined ? resolve(query.subject) : [undefined];
-        const objects = query.object !== undefined ? resolve(query.object) : [undefined];
+        const subjects = query.subject !== undefined ? await resolve(query.subject) : [undefined];
+        const objects = query.object !== undefined ? await resolve(query.object) : [undefined];
         for (const subject of subjects) {
           for (const object of objects) {
-            relations.push(...store.queryRelations({ subject, predicate: query.predicate, object, limit: query.limit }));
+            relations.push(...(await store.queryRelations({ subject, predicate: query.predicate, object, limit: query.limit })));
           }
         }
       }
@@ -372,61 +433,111 @@ export class TacetWorkspace {
         ...pageApis.flatMap((u) => [u.page, u.endpoint]),
         ...relatedPages.map((r) => r.page),
       ];
-      for (const id of new Set(ids)) if (!entities[id]) note(store.getEntity(id));
+      for (const id of new Set(ids)) if (!entities[id]) note(await store.getEntity(id));
       return { entities, relations, pageApis, relatedPages };
     });
   }
 
-  check(options: CheckOptions = {}): ContractReport {
-    const model = this.model();
+  /** Which page uses which API: every page, pages matching `page`, or (with `api`) the pages of each matching API. */
+  async pageApis(query: PageApisQuery = {}): Promise<PageApis[] | ApiPages[]> {
+    const ontology = await this.ontology({ includeFiles: false });
+    if (query.api) {
+      const q = query.api.toLowerCase();
+      return pagesByApi(ontology).filter((row) => row.apiKey.toLowerCase().includes(q));
+    }
+    if (!query.page) return ontology.pages;
+    const q = query.page.toLowerCase();
+    return ontology.pages.filter((p) => (p.route ?? "").toLowerCase().includes(q) || p.component.toLowerCase().includes(q));
+  }
+
+  /** What the index holds for this project. */
+  async status(): Promise<IndexStatus> {
+    return this.withStore(async (store) => {
+      const side = async (prefix: string) =>
+        (await store.getMeta(`${prefix}language`)) === null
+          ? null
+          : { rootDir: (await store.getMeta(`${prefix}rootDir`)) ?? "", generatedAt: (await store.getMeta(`${prefix}generatedAt`)) ?? "" };
+      return {
+        indexPath: this.indexPath,
+        project: this.project,
+        frontend: await side(""),
+        backend: await side("backend."),
+        summary: await store.summary(),
+      };
+    });
+  }
+
+  /** Removes everything indexed for this project. */
+  async clear(): Promise<void> {
+    this.frontendProject = null;
+    await this.withStore((store) => store.clear());
+  }
+
+  async check(options: CheckOptions = {}): Promise<ContractReport> {
+    const model = await this.model();
     const files = this.scopeFiles(model.frontend.rootDir, options.files, options.changedSince);
     return checkContract(model, { files: files ?? undefined });
   }
 
-  impact(): ImpactAnalyzer {
-    return new ImpactAnalyzer(this.model());
+  async impact(): Promise<ImpactAnalyzer> {
+    return new ImpactAnalyzer(await this.model());
   }
 
   /** Pages, components, functions, APIs, controllers and DTOs, and how they connect (subject–predicate–object). */
-  ontology(options: OntologyQueryOptions = {}): Ontology {
-    const ontology = buildOntology(this.model(), options);
+  async ontology(options: OntologyQueryOptions = {}): Promise<Ontology> {
+    const ontology = buildOntology(await this.model(), options);
     return options.focus ? focusOntology(ontology, options.focus, options.depth) : ontology;
   }
 
   /**
    * Who uses each backend endpoint: this index's frontend, the frontends of `otherIndexes` (other apps against
-   * the same backend), and backend services through Feign / @HttpExchange clients.
+   * the same backend, each a database location) and of `otherProjects` (other projects in this database), and
+   * backend services through Feign / @HttpExchange clients.
    */
-  usage(otherIndexes: string[] = []): UsageReport {
-    const indexes = [this.indexPath, ...otherIndexes.map((p) => resolve(p))];
-    const models = indexes.map((path, i) => (i === 0 ? this : new TacetWorkspace(path)).model());
-    const frontendNames = models.map((m) => basename(m.frontend.rootDir));
-    const names =
-      new Set(frontendNames).size === models.length
-        ? frontendNames
-        : indexes.map((path) => basename(path).replace(/\.[^.]+$/, ""));
-    return analyzeUsage(models.map((model, i) => ({ name: names[i], model })));
+  async usage(otherIndexes: string[] = [], otherProjects: string[] = []): Promise<UsageReport> {
+    const others = [
+      ...otherIndexes.map((index) => ({ ws: new TacetWorkspace(index), owned: true })),
+      ...otherProjects.map((project) => ({ ws: this.forProject(project), owned: false })),
+    ];
+    const workspaces = [this, ...others.map((o) => o.ws)];
+    try {
+      const models = await Promise.all(workspaces.map((ws) => ws.model()));
+      const frontendNames = models.map((m) => basename(m.frontend.rootDir));
+      const names =
+        new Set(frontendNames).size === models.length
+          ? frontendNames
+          : workspaces.map((ws) =>
+              ws.project !== DEFAULT_PROJECT ? ws.project : basename(ws.indexPath).replace(/\.[^.]+$/, ""),
+            );
+      return analyzeUsage(models.map((model, i) => ({ name: names[i], model })));
+    } finally {
+      await Promise.all(others.filter((o) => o.owned).map((o) => o.ws.close()));
+    }
+  }
+
+  /** A workspace for another project in the same database (sharing its connection). */
+  forProject(project: string): TacetWorkspace {
+    if (project === this.project) return this;
+    const ws = new TacetWorkspace(this.location, this.configPath, { project });
+    ws.database = this.open();
+    ws.ownsDatabase = false;
+    return ws;
   }
 
   /** Converts user-supplied paths (cwd-relative, absolute or root-relative) to index paths. */
-  toIndexPath(file: string, root?: string): string {
-    const frontendRoot = root ?? this.model().frontend.rootDir;
-    const absolute = isAbsolute(file) ? file : resolve(file);
-    const insideRoot = absolute.startsWith(frontendRoot + sep);
-    const rel = insideRoot && (existsSync(absolute) || !existsSync(join(frontendRoot, file)))
-      ? relative(frontendRoot, absolute)
-      : file.replace(/^\.\//, "");
-    return rel.split(sep).join("/");
+  async toIndexPath(file: string, root?: string): Promise<string> {
+    const frontendRoot = root ?? (await this.model()).frontend.rootDir;
+    return toIndexPath(file, frontendRoot);
   }
 
   private scopeFiles(root: string, files?: string[], changedSince?: string): string[] | null {
     if (changedSince) return changedSourceFiles(root, changedSince);
-    if (files?.length) return files.map((f) => this.toIndexPath(f, root));
+    if (files?.length) return files.map((f) => toIndexPath(f, root));
     return null;
   }
 
-  private apisUsedBy(files: string[]): IndexFrontendResult["apis"] {
-    const analyzer = this.impact();
+  private async apisUsedBy(files: string[]): Promise<IndexFrontendResult["apis"]> {
+    const analyzer = await this.impact();
     const apis = new Map<string, IndexFrontendResult["apis"][number]>();
     for (const file of files) {
       for (const api of analyzer.impactOfFile(file).apis) {
@@ -443,15 +554,30 @@ export class TacetWorkspace {
     return existsSync(local) ? loadConfig(local) : {};
   }
 
-  private withStore<T>(work: (store: IndexStore) => T): T {
-    mkdirSync(dirname(this.indexPath), { recursive: true });
-    const store = IndexStore.open(this.indexPath);
-    try {
-      return work(store);
-    } finally {
-      store.close();
-    }
+  private open(): Promise<IndexDatabase> {
+    if (this.database) return this.database;
+    const opening = openIndexDatabase(this.location);
+    // A failed open is retried on next use rather than cached.
+    opening.catch(() => {
+      if (this.database === opening) this.database = null;
+    });
+    this.database = opening;
+    return opening;
   }
+
+  private async withStore<T>(work: (store: IndexStore) => Promise<T>): Promise<T> {
+    return work((await this.open()).project(this.project));
+  }
+}
+
+/** Converts user-supplied paths (cwd-relative, absolute or root-relative) to index paths. */
+function toIndexPath(file: string, frontendRoot: string): string {
+  const absolute = isAbsolute(file) ? file : resolve(file);
+  const insideRoot = absolute.startsWith(frontendRoot + sep);
+  const rel = insideRoot && (existsSync(absolute) || !existsSync(join(frontendRoot, file)))
+    ? relative(frontendRoot, absolute)
+    : file.replace(/^\.\//, "");
+  return rel.split(sep).join("/");
 }
 
 function writeJson(path: string, value: unknown): void {

@@ -1,9 +1,12 @@
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
+
+export type SqlDialect = "sqlite" | "postgres";
 
 /**
  * The index is a cache of extractor manifests: every row keeps the full IR
  * object as JSON plus the columns needed for lookups. No foreign keys -
- * consistency comes from syncing whole manifests.
+ * consistency comes from syncing whole manifests. Every row belongs to a
+ * project, so one database (e.g. a shared PostgreSQL) can hold many frontends.
  */
 export const TABLES = [
   "files",
@@ -20,51 +23,58 @@ export const TABLES = [
 /** Relation tables: the ontology derived from the facts above, rewritten whenever the facts change. */
 export const RELATION_TABLES = ["entities", "relations", "page_apis", "related_pages"] as const;
 
-export const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+export const META_TABLE = "index_meta";
 
-CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, file TEXT NOT NULL, json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS functions (
-  id TEXT PRIMARY KEY, file TEXT NOT NULL, name TEXT NOT NULL, json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS api_calls (
-  id TEXT PRIMARY KEY, file TEXT NOT NULL, method TEXT, endpoint_pattern TEXT, json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS property_accesses (
-  id TEXT PRIMARY KEY, file TEXT NOT NULL, api_call_id TEXT NOT NULL, json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS routes (id TEXT PRIMARY KEY, file TEXT NOT NULL, json TEXT NOT NULL);
+/** Rows of `index_meta` with this project hold database-wide values (the schema version). */
+export const GLOBAL_PROJECT = "";
 
-CREATE TABLE IF NOT EXISTS endpoints (
-  id TEXT PRIMARY KEY, file TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS dtos (id TEXT PRIMARY KEY, file TEXT NOT NULL, name TEXT NOT NULL, json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS enums (id TEXT PRIMARY KEY, file TEXT NOT NULL, name TEXT NOT NULL, json TEXT NOT NULL);
--- Requests the backend sends to other services (Feign / @HttpExchange clients). Added without a schema bump:
--- an index from before simply has none until the backend is extracted again.
-CREATE TABLE IF NOT EXISTS service_calls (
-  id TEXT PRIMARY KEY, file TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, json TEXT NOT NULL);
+/** The DDL for a dialect. Text compares bytewise in both, so results come back in the same order. */
+export function schemaSql(dialect: SqlDialect): string {
+  const T = dialect === "postgres" ? 'TEXT COLLATE "C"' : "TEXT";
+  const fact = (table: string, extra = "") =>
+    `CREATE TABLE IF NOT EXISTS ${table} (
+  project ${T} NOT NULL, id ${T} NOT NULL, file ${T} NOT NULL,${extra} json TEXT NOT NULL, PRIMARY KEY (project, id));`;
+  return `
+CREATE TABLE IF NOT EXISTS index_meta (project ${T} NOT NULL, key ${T} NOT NULL, value TEXT NOT NULL, PRIMARY KEY (project, key));
 
-CREATE INDEX IF NOT EXISTS idx_functions_file ON functions(file);
-CREATE INDEX IF NOT EXISTS idx_api_calls_endpoint ON api_calls(method, endpoint_pattern);
-CREATE INDEX IF NOT EXISTS idx_api_calls_file ON api_calls(file);
-CREATE INDEX IF NOT EXISTS idx_prop_access_apicall ON property_accesses(api_call_id);
-CREATE INDEX IF NOT EXISTS idx_prop_access_file ON property_accesses(file);
-CREATE INDEX IF NOT EXISTS idx_endpoints_method_path ON endpoints(method, path);
+${fact("files")}
+${fact("functions", ` name ${T} NOT NULL,`)}
+${fact("api_calls", ` method ${T}, endpoint_pattern ${T},`)}
+${fact("property_accesses", ` api_call_id ${T} NOT NULL,`)}
+${fact("routes")}
+
+${fact("endpoints", ` method ${T} NOT NULL, path ${T} NOT NULL,`)}
+${fact("dtos", ` name ${T} NOT NULL,`)}
+${fact("enums", ` name ${T} NOT NULL,`)}
+-- Requests the backend sends to other services (Feign / @HttpExchange clients).
+${fact("service_calls", ` method ${T} NOT NULL, path ${T} NOT NULL,`)}
+
+CREATE INDEX IF NOT EXISTS idx_functions_file ON functions(project, file);
+CREATE INDEX IF NOT EXISTS idx_api_calls_endpoint ON api_calls(project, method, endpoint_pattern);
+CREATE INDEX IF NOT EXISTS idx_api_calls_file ON api_calls(project, file);
+CREATE INDEX IF NOT EXISTS idx_prop_access_apicall ON property_accesses(project, api_call_id);
+CREATE INDEX IF NOT EXISTS idx_prop_access_file ON property_accesses(project, file);
+CREATE INDEX IF NOT EXISTS idx_endpoints_method_path ON endpoints(project, method, path);
 
 -- Relations (subject -predicate-> object) between pages, components, functions, APIs, controllers, DTOs and files.
 CREATE TABLE IF NOT EXISTS entities (
-  id TEXT PRIMARY KEY, class TEXT NOT NULL, label TEXT NOT NULL, file TEXT, line INTEGER, status TEXT, json TEXT NOT NULL);
+  project ${T} NOT NULL, id ${T} NOT NULL, class ${T} NOT NULL, label ${T} NOT NULL, file ${T}, line INTEGER, status ${T},
+  route_path ${T}, component ${T}, json TEXT NOT NULL, PRIMARY KEY (project, id));
 CREATE TABLE IF NOT EXISTS relations (
-  subject TEXT NOT NULL, predicate TEXT NOT NULL, object TEXT NOT NULL, inferred INTEGER NOT NULL, json TEXT NOT NULL,
-  PRIMARY KEY (subject, predicate, object));
+  project ${T} NOT NULL, subject ${T} NOT NULL, predicate ${T} NOT NULL, object ${T} NOT NULL, inferred INTEGER NOT NULL,
+  json TEXT NOT NULL, PRIMARY KEY (project, subject, predicate, object));
 -- Which page uses which API (the inferred usesApi relation), with the call path and the response fields read.
 CREATE TABLE IF NOT EXISTS page_apis (
-  page TEXT NOT NULL, endpoint TEXT NOT NULL, api_key TEXT NOT NULL, status TEXT, via TEXT NOT NULL, fields TEXT NOT NULL,
-  common INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (page, endpoint));
+  project ${T} NOT NULL, page ${T} NOT NULL, endpoint ${T} NOT NULL, api_key ${T} NOT NULL, status ${T}, via TEXT NOT NULL,
+  fields TEXT NOT NULL, common INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (project, page, endpoint));
 -- Pages sharing non-common APIs (common = used by a large share of all pages, e.g. a permission check).
 CREATE TABLE IF NOT EXISTS related_pages (
-  page TEXT NOT NULL, related TEXT NOT NULL, shared INTEGER NOT NULL, apis TEXT NOT NULL, PRIMARY KEY (page, related));
+  project ${T} NOT NULL, page ${T} NOT NULL, related ${T} NOT NULL, shared INTEGER NOT NULL, apis TEXT NOT NULL,
+  PRIMARY KEY (project, page, related));
 
-CREATE INDEX IF NOT EXISTS idx_entities_class ON entities(class);
-CREATE INDEX IF NOT EXISTS idx_entities_label ON entities(label);
-CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(object, predicate);
-CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations(predicate);
-CREATE INDEX IF NOT EXISTS idx_page_apis_endpoint ON page_apis(endpoint);
+CREATE INDEX IF NOT EXISTS idx_entities_class ON entities(project, class);
+CREATE INDEX IF NOT EXISTS idx_entities_label ON entities(project, label);
+CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(project, object);
+CREATE INDEX IF NOT EXISTS idx_page_apis_endpoint ON page_apis(project, endpoint);
 `;
+}

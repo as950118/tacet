@@ -24,7 +24,7 @@ AI는 핵심 분석 엔진이 아니라 Verification Layer이며, AI 없이도 1
                       │  @tacet-api/core            │
                       │  (language-agnostic)      │
                       │  - IR schema              │
-                      │  - Index store (SQLite)   │
+                      │  - Index store (SQLite/PG)│
                       │  - Extractor protocol     │
                       │  - Diff / Impact  (P4/P5) │
                       │  - AI provider    (P6)    │
@@ -56,7 +56,7 @@ packages/
 ├── core/                  언어 비종속 엔진
 │   └── src/
 │       ├── ir/            IR 타입 (Frontend + Backend manifest)
-│       ├── index-store/   SQLite schema + repository
+│       ├── index-store/   IndexStore 인터페이스, SQL 구현, SQLite/PostgreSQL driver
 │       ├── extractor/     LanguageExtractor 인터페이스, SubprocessExtractor
 │       ├── analysis/      Phase 3: 연결(link), contract check, impact 질의, graph
 │       ├── report/        graph renderer (Mermaid, 인터랙티브 HTML)
@@ -75,9 +75,13 @@ packages/
 ├── mcp/                   MCP: stdio 서버, fastmcp adapter, tool 정의 (python/ 은 Python 바인딩)
 └── cli/                   tacet 바이너리
     └── src/
-        ├── workspace.ts   TacetWorkspace — CLI/MCP가 공유하는 라이브러리 진입점
+        ├── workspace.ts   TacetWorkspace — CLI/MCP/HTTP API가 공유하는 라이브러리 진입점
+        ├── server.ts      HTTP API (tacet serve): route 표 하나로 처리와 OpenAPI 문서를 만든다
         ├── program.ts     커맨드 정의
         └── format.ts      텍스트 출력
+
+web/                       Next.js 대시보드 (Vercel): 서버에서 HTTP API를 호출해 프로젝트·API 사용 현황·페이지↔API를 보여준다
+Dockerfile                 HTTP API 이미지 (Koyeb 등, 기본 read-only). 배포 구성은 DEPLOY.md
 ```
 
 `packages/extractor-java/`는 두 부분으로 되어 있다: `jvm/`(Gradle, JavaParser → fat JAR)과 이를 실행하는
@@ -211,13 +215,26 @@ nested type / wildcard import / static import 규칙으로 프로젝트 타입�
 - `linking.frontendBasePath`(axios baseURL 등) / `linking.backendBasePath`(context-path) 설정으로 prefix 차이를 맞춘다.
 - 링크는 저장하지 않고 조회 시 `ProjectModel`이 계산한다. frontend/backend 어느 쪽만 다시 추출해도 즉시 반영된다.
 
-## 7. Index schema (SQLite)
+## 7. Index schema (SQLite / PostgreSQL)
 
-`node:sqlite`(Node 22.13+ 내장)를 사용해 native 모듈 빌드 없이 CI에서 동작한다. index는 extractor manifest의
-**캐시**다. 각 row는 IR 객체 JSON 전체 + 조회용 컬럼만 가진다(외래키 없음, schema version이 다르면 재생성).
+저장 계층은 세 층이다.
+
+- `IndexStore` (interface): 한 프로젝트의 사실·관계 읽기/쓰기. workspace, CLI, MCP, HTTP API는 이것만 쓴다.
+- `IndexDatabase`: 여러 프로젝트를 담는 DB(`openIndexDatabase(location)`, `project(name)`, `listProjects()`).
+- `SqlDriver`: `?` placeholder SQL을 실행하는 최소 인터페이스(`all`, `run`, `exec`, `transaction(work, lock)`).
+  - SQLite: `node:sqlite`(Node 22.13+ 내장, native 빌드 없음). 동기 API라 같은 프로세스의 쓰기는 파일별 mutex로 직렬화한다.
+  - PostgreSQL: `pg`(처음 쓸 때 로드). 테이블은 URL의 `?schema=`(기본 `tacet`)에 만들고, 쓰기 transaction은
+    `pg_advisory_xact_lock(project)`으로 프로세스·머신 간에도 직렬화한다. 텍스트 컬럼은 `COLLATE "C"`라 정렬 결과가 SQLite와 같다.
+
+SQL 구현(`SqlIndexStore`)은 하나이고 두 DB에서 공통으로 되는 문법만 쓴다(`ON CONFLICT … DO UPDATE`, 다중 row `INSERT`,
+`CAST(COUNT(*) AS INTEGER)`). JSON 함수 대신 조회에 필요한 값(`entities.route_path`, `component`)은 컬럼으로 둔다.
+다른 저장소(예: 원격 서비스)는 `IndexStore`를 직접 구현하면 된다.
+
+index는 extractor manifest의 **캐시**다. 각 row는 IR 객체 JSON 전체 + 조회용 컬럼만 가진다(외래키 없음, schema
+version이 다르면 재생성). 모든 테이블의 기본키 앞에 `project`가 붙는다(아래에서는 생략).
 
 ```sql
-index_meta(key, value)   -- schemaVersion, language, rootDir, generatedAt, config, backend.*
+index_meta(project, key, value)   -- schemaVersion(project ''), language, rootDir, generatedAt, config, backend.*
 files(id, file, json)
 functions(id, file, name, json)
 api_calls(id, file, method, endpoint_pattern, json)
@@ -415,6 +432,9 @@ Page ┄usesApi┄▶ Endpoint   (추론: showsComponent/renders/calls/requests�
  Python FastMCP ─▶ tacet (python) ─▶ CLI --format json ─┐
                                                           ▼
                                    TacetWorkspace (@tacet-api/cli) ─▶ @tacet-api/core + extractors
+ HTTP client ───▶ tacet serve (REST, /openapi.json) ──────┘         │
+                                                                     ▼
+                                              IndexStore ─▶ SQLite 파일 | PostgreSQL (project별)
 ```
 
 - **`createTacetTools(options)`**: 프레임워크 중립 tool 정의(zod schema + JSON 결과 handler, read-only annotation).
@@ -427,6 +447,10 @@ Page ┄usesApi┄▶ Endpoint   (추론: showsComponent/renders/calls/requests�
   분석 로직은 Node 쪽 한 곳에만 있고 Python은 호출만 한다(동작이 갈라지지 않음).
 - 상주 프로세스(MCP)에서는 workspace가 `TypeScriptProject`를 유지하므로 `index_frontend(files=...)`가 바뀐 파일만 다시 읽는다.
 - impact 결과의 graph는 `graph: none | mermaid | json`으로 크기를 조절한다(LLM에는 mermaid가 간결).
+- **HTTP API (`tacet serve`, `createTacetApiServer`)**: DB 하나를 열어 두고 프로젝트별 workspace를 공유한다(`/projects/{p}/…`).
+  route 표(method, path, query/body 파라미터, handler)가 요청 검증과 `/openapi.json`을 함께 만든다. 보안: 기본 127.0.0.1,
+  그 밖의 host는 bearer 토큰 필수(`timingSafeEqual` 비교), 인덱싱 경로는 `--allow-dir` 안으로 제한(symlink 해석 후),
+  body 1MB 제한, 같은 프로젝트의 쓰기는 직렬화. workspace 오류 중 "No …"/"not found"는 404, 그 밖의 입력 오류는 400.
 
 ## 13. CI/CD (Phase 7, 구현됨)
 

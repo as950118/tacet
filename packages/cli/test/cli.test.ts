@@ -59,8 +59,20 @@ describe("TacetWorkspace.indexFrontend", () => {
     );
   });
 
-  it("explains how to recover when the index is empty", () => {
-    expect(() => new TacetWorkspace(join(dir, "empty.db")).model()).toThrow("Run `tacet index");
+  it("explains how to recover when the index is empty", async () => {
+    await expect(new TacetWorkspace(join(dir, "empty.db")).model()).rejects.toThrow("Run `tacet index");
+  });
+
+  it("keeps projects in one database apart", async () => {
+    const db = join(dir, "projects.db");
+    const admin = new TacetWorkspace(db, undefined, { project: "admin" });
+    await admin.indexFrontend(join(fixtures, "frontend"), { configPath: join(fixtures, "tacet.config.json") });
+    expect((await admin.status()).summary.apiCalls).toBe(15);
+    const shop = admin.forProject("shop");
+    await expect(shop.model()).rejects.toThrow('(project "shop")');
+    await admin.clear();
+    await expect(admin.model()).rejects.toThrow("Run `tacet index");
+    await admin.close();
   });
 });
 
@@ -73,27 +85,27 @@ describe.skipIf(!hasJar)("with the backend contract", () => {
     await ws.extractBackend(join(fixtures, "backend"));
   });
 
-  it("keeps the relations in the index and answers page / API / relation queries from it", () => {
-    const byPage = ws.relations({ page: "UserPage" });
+  it("keeps the relations in the index and answers page / API / relation queries from it", async () => {
+    const byPage = await ws.relations({ page: "UserPage" });
     expect(byPage.pageApis.map((u) => u.apiKey)).toContain("GET /users/{id}");
-    const byApi = ws.relations({ api: "GET /users/{id}" });
+    const byApi = await ws.relations({ api: "GET /users/{id}" });
     expect(byApi.pageApis.map((u) => byApi.entities[u.page].label)).toContain("UserPage (page)");
-    const renders = ws.relations({ subject: "UserPage", predicate: "renders" });
+    const renders = await ws.relations({ subject: "UserPage", predicate: "renders" });
     expect(renders.relations.map((t) => renders.entities[t.object].label)).toContain("UserCard");
-    expect(() => ws.relations({ page: "/nope" })).toThrow('No Page "/nope"');
+    await expect(ws.relations({ page: "/nope" })).rejects.toThrow('No Page "/nope"');
   });
 
-  it("rebuilds the stored relations when the common-API rule in the config changes", () => {
+  it("rebuilds the stored relations when the common-API rule in the config changes", async () => {
     const config = join(dir, "common.config.json");
     const base = JSON.parse(readFileSync(join(fixtures, "tacet.config.json"), "utf8"));
     writeFileSync(config, JSON.stringify({ ...base, commonApis: { include: ["GET /users/{id}"] } }));
-    const custom = new TacetWorkspace(ws.indexPath, config).relations({ api: "GET /users/{id}" });
+    const custom = await new TacetWorkspace(ws.indexPath, config).relations({ api: "GET /users/{id}" });
     expect(custom.pageApis.every((u) => u.common)).toBe(true);
-    expect(ws.relations({ api: "GET /users/{id}" }).pageApis.some((u) => u.common)).toBe(false);
+    expect((await ws.relations({ api: "GET /users/{id}" })).pageApis.some((u) => u.common)).toBe(false);
   });
 
-  it("finds every planted contract violation and nothing else", () => {
-    const report = ws.check();
+  it("finds every planted contract violation and nothing else", async () => {
+    const report = await ws.check();
     expect(report.result).toBe("FAIL");
     expect(report.issues.map((i) => `${i.code} ${i.file}:${i.line}`)).toEqual([
       "ENDPOINT_NOT_FOUND src/pages/UserAdmin.tsx:5",
@@ -106,8 +118,8 @@ describe.skipIf(!hasJar)("with the backend contract", () => {
     ]);
   });
 
-  it("passes for files that use the API correctly", () => {
-    const report = ws.check({ files: ["src/pages/User.tsx", "src/components/UserCard.tsx"] });
+  it("passes for files that use the API correctly", async () => {
+    const report = await ws.check({ files: ["src/pages/User.tsx", "src/components/UserCard.tsx"] });
     expect(report.result).toBe("PASS");
     expect(report.apis.map((a) => a.apiKey)).toEqual(["GET /users/{id}"]);
   });
@@ -164,8 +176,8 @@ describe.skipIf(!hasJar)("with the backend contract", () => {
     expect(JSON.parse(readFileSync(second.files.json, "utf8")).exitCode).toBe(1);
   });
 
-  it("answers impact questions from the index", () => {
-    const analyzer = ws.impact();
+  it("answers impact questions from the index", async () => {
+    const analyzer = await ws.impact();
     expect(analyzer.impactOfApi("GET /users/{id}")[0].files).toEqual([
       "src/api/user.ts",
       "src/components/UserCard.tsx",

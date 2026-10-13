@@ -1,7 +1,7 @@
 {
   "name": "@tacet-api/core",
   "version": "0.1.2",
-  "description": "Language-agnostic Tacet engine: IR, SQLite index, API linking, contract checks, change impact, AI verification",
+  "description": "Language-agnostic Tacet engine: IR, index store (SQLite or PostgreSQL), API linking, contract checks, change impact, AI verification",
   "keywords": [
     "tacet",
     "api",
@@ -40,5 +40,8 @@
   },
   "scripts": {
     "build": "tsc -b tsconfig.json"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
   }
 }

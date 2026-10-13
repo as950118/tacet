@@ -130,6 +130,17 @@ def test_falls_back_to_the_matching_npm_release(tmp_path, monkeypatch):
     assert client._default_command() == ["/usr/bin/npx", "--yes", f"@tacet-api/cli@{tacet.__version__}"]
 
 
+def test_database_urls_and_projects_reach_the_cli(tmp_path):
+    fake = tmp_path / "fake_cli.py"
+    fake.write_text("import json, os, sys\nprint(json.dumps({'argv': sys.argv[1:], 'index': os.environ.get('TACET_INDEX')}))\n")
+    url = "postgres://tacet:secret@db:5432/tacet?schema=tacet"
+    lens = Tacet(index=url, project="admin", command=[sys.executable, str(fake)])
+    result = lens.projects()
+    assert result["index"] == url
+    assert "secret" not in " ".join(result["argv"])
+    assert result["argv"][:2] == ["--project", "admin"]
+
+
 def test_verify_builds_the_cli_call(tmp_path):
     fake = tmp_path / "fake_cli.py"
     fake.write_text("import json, sys\nprint(json.dumps({'argv': sys.argv[1:]}))\n")

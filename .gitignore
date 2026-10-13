@@ -18,3 +18,8 @@ python/dist/
 plugins/*/build/
 plugins/*/target/
 plugins/*/.gradle/
+
+# Local secrets (database URLs, API tokens)
+.env
+.env.*
+!.env.example

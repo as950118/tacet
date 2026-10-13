@@ -1,4 +1,3 @@
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { TacetConfig } from "../config.js";
 import type {
   ApiCallInfo,
@@ -14,7 +13,11 @@ import type {
   ServiceCallInfo,
 } from "../ir/types.js";
 import type { Ontology, OntologyEntity, OntologyTriple, PageApiUse, RelatedPage } from "../analysis/ontology.js";
-import { RELATION_TABLES, SCHEMA_SQL, SCHEMA_VERSION, TABLES } from "./schema.js";
+import { openSqlDriver, type SqlDriver, type SqlValue } from "./driver.js";
+import { GLOBAL_PROJECT, META_TABLE, RELATION_TABLES, SCHEMA_VERSION, TABLES, schemaSql, type SqlDialect } from "./schema.js";
+
+/** The project used when none is named: a SQLite file usually holds just one. */
+export const DEFAULT_PROJECT = "default";
 
 /** A row of `page_apis`: one page using one API. */
 export interface StoredPageApi extends PageApiUse {
@@ -49,85 +52,195 @@ export interface BackendIndexUpdate {
   changedEndpoints: string[];
 }
 
+export interface ProjectInfo {
+  name: string;
+  frontend: { rootDir: string; generatedAt: string } | null;
+  backend: { rootDir: string; generatedAt: string } | null;
+}
+
+/**
+ * The index of one project: extractor manifests (facts) and the relations derived from them. The workspace, CLI,
+ * MCP and HTTP servers only use this interface, so where the data lives (a SQLite file, a shared PostgreSQL, …)
+ * is decided by {@link openIndexDatabase} alone.
+ */
+export interface IndexStore {
+  readonly project: string;
+
+  getMeta(key: string): Promise<string | null>;
+  /** The config used when the frontend was indexed, so later queries link endpoints the same way. */
+  writeConfig(config: TacetConfig): Promise<void>;
+  readConfig(): Promise<TacetConfig>;
+
+  /**
+   * Syncs the frontend part of the index with a manifest. Only rows that actually changed are written, and the
+   * files they belong to are reported, so callers can tell which parts of the frontend a code change touched.
+   */
+  writeManifest(manifest: FrontendManifest): Promise<FrontendIndexUpdate>;
+  writeBackendManifest(manifest: BackendManifest): Promise<BackendIndexUpdate>;
+  /** Replaces the stored relations with an ontology built from the current facts. */
+  writeRelations(ontology: Ontology, config?: TacetConfig): Promise<{ entities: number; relations: number; pageApis: number }>;
+
+  summary(): Promise<IndexSummary>;
+  listFiles(): Promise<FileInfo[]>;
+  listFunctions(): Promise<FunctionInfo[]>;
+  listApiCalls(): Promise<ApiCallInfo[]>;
+  listPropertyAccesses(): Promise<PropertyAccessInfo[]>;
+  listRoutes(): Promise<RouteInfo[]>;
+  findApiCallsByEndpoint(method: string, endpointPattern: string): Promise<ApiCallInfo[]>;
+  findPropertyAccessesForApiCall(apiCallId: string): Promise<PropertyAccessInfo[]>;
+
+  hasRelations(): Promise<boolean>;
+  /** Whether the stored relations were built with this config (e.g. the same common-API rule). */
+  relationsBuiltWith(config: TacetConfig): Promise<boolean>;
+  getEntity(id: string): Promise<OntologyEntity | null>;
+  /** Entities whose id, label, route path or page component is exactly `key`, optionally of one class. */
+  findEntitiesByKey(key: string, cls?: string): Promise<OntologyEntity[]>;
+  /** Relations matching every given part (entity ids), e.g. { predicate: "renders", object: "fn:..." }. */
+  queryRelations(query?: RelationQuery): Promise<OntologyTriple[]>;
+  /** Pages using an API (endpoint entity id), or the APIs a page uses (page entity id). */
+  pageApis(by: { page?: string; endpoint?: string }): Promise<StoredPageApi[]>;
+  /** Pages sharing the most non-common APIs with a page (page entity id). */
+  relatedPages(page: string): Promise<Array<Omit<RelatedPage, "route" | "component">>>;
+
+  /** The frontend manifest stored in the index, or null when no frontend has been indexed. */
+  readFrontendManifest(): Promise<FrontendManifest | null>;
+  /** The backend manifest stored in the index, or null when no backend has been extracted. */
+  readBackendManifest(): Promise<BackendManifest | null>;
+  /** Removes everything stored for this project. */
+  clear(): Promise<void>;
+}
+
+/** A database holding the indexes of any number of projects. */
+export interface IndexDatabase {
+  readonly dialect: SqlDialect;
+  /** Where the data lives, without credentials. */
+  readonly location: string;
+  project(name?: string): IndexStore;
+  listProjects(): Promise<ProjectInfo[]>;
+  close(): Promise<void>;
+}
+
+/**
+ * Opens (and creates or migrates) an index database: a `postgres://user:pass@host/db?schema=tacet` URL, or a SQLite
+ * file path. The index is derived data, so a database with an older layout is rebuilt rather than migrated.
+ */
+export async function openIndexDatabase(location: string): Promise<IndexDatabase> {
+  const driver = await openSqlDriver(location);
+  try {
+    await driver.transaction(async (tx) => {
+      const version = await schemaVersion(tx);
+      if (version !== null && version !== String(SCHEMA_VERSION)) {
+        for (const table of [...TABLES, ...RELATION_TABLES, META_TABLE]) await tx.exec(`DROP TABLE IF EXISTS ${table}`);
+      }
+      await tx.exec(schemaSql(driver.dialect));
+      await upsertMeta(tx, GLOBAL_PROJECT, "schemaVersion", String(SCHEMA_VERSION));
+    }, "schema");
+  } catch (err) {
+    await driver.close();
+    throw err;
+  }
+  return new SqlIndexDatabase(driver);
+}
+
+async function schemaVersion(tx: SqlDriver): Promise<string | null> {
+  const exists =
+    tx.dialect === "postgres"
+      ? await tx.all("SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?", [META_TABLE])
+      : await tx.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [META_TABLE]);
+  if (!exists.length) return null;
+  // Works for every layout so far: older ones had no `project` column.
+  const rows = await tx.all<{ value: string }>(`SELECT value FROM ${META_TABLE} WHERE key = 'schemaVersion'`);
+  return rows[0]?.value ?? "unknown";
+}
+
+async function upsertMeta(db: SqlDriver, project: string, key: string, value: string): Promise<void> {
+  await db.run(
+    `INSERT INTO ${META_TABLE} (project, key, value) VALUES (?, ?, ?) ON CONFLICT (project, key) DO UPDATE SET value = excluded.value`,
+    [project, key, value],
+  );
+}
+
+class SqlIndexDatabase implements IndexDatabase {
+  constructor(private readonly driver: SqlDriver) {}
+
+  get dialect(): SqlDialect {
+    return this.driver.dialect;
+  }
+
+  get location(): string {
+    return this.driver.location;
+  }
+
+  project(name: string = DEFAULT_PROJECT): IndexStore {
+    if (!name || name === GLOBAL_PROJECT) throw new Error("A project name must not be empty");
+    return new SqlIndexStore(this.driver, name);
+  }
+
+  async listProjects(): Promise<ProjectInfo[]> {
+    const rows = await this.driver.all<{ project: string; key: string; value: string }>(
+      `SELECT project, key, value FROM ${META_TABLE} WHERE project <> ? AND key IN ('rootDir', 'generatedAt', 'backend.rootDir', 'backend.generatedAt') ORDER BY project`,
+      [GLOBAL_PROJECT],
+    );
+    const meta = new Map<string, Record<string, string>>();
+    for (const r of rows) meta.set(r.project, { ...meta.get(r.project), [r.key]: r.value });
+    return [...meta].map(([name, m]) => ({
+      name,
+      frontend: m.rootDir !== undefined ? { rootDir: m.rootDir, generatedAt: m.generatedAt ?? "" } : null,
+      backend: m["backend.rootDir"] !== undefined ? { rootDir: m["backend.rootDir"], generatedAt: m["backend.generatedAt"] ?? "" } : null,
+    }));
+  }
+
+  close(): Promise<void> {
+    return this.driver.close();
+  }
+}
+
 type Table = (typeof TABLES)[number];
 
 interface SyncRow {
   id: string;
   file: string;
-  columns: Record<string, SQLInputValue>;
+  columns: Record<string, SqlValue>;
   value: unknown;
 }
 
-/** SQLite-backed cache of frontend and backend manifests. The only module that knows about SQL. */
-export class IndexStore {
-  private constructor(private readonly db: DatabaseSync) {
-    const version = this.tableExists("index_meta") ? this.getMeta("schemaVersion") : null;
-    if (version !== null && version !== String(SCHEMA_VERSION)) {
-      // The index is derived data; an old layout is simply rebuilt.
-      for (const table of [...TABLES, ...RELATION_TABLES, "index_meta"]) this.db.exec(`DROP TABLE IF EXISTS ${table}`);
-    }
-    this.db.exec(SCHEMA_SQL);
-    this.setMeta("schemaVersion", String(SCHEMA_VERSION));
+/** Rows per multi-row INSERT: well under SQLite's and PostgreSQL's parameter limits. */
+const MAX_PARAMS = 8000;
+
+/** The index of one project in a SQL database (SQLite or PostgreSQL). The only module that knows about SQL. */
+class SqlIndexStore implements IndexStore {
+  constructor(
+    private readonly db: SqlDriver,
+    readonly project: string,
+  ) {}
+
+  async getMeta(key: string): Promise<string | null> {
+    const rows = await this.db.all<{ value: string }>(`SELECT value FROM ${META_TABLE} WHERE project = ? AND key = ?`, [
+      this.project,
+      key,
+    ]);
+    return rows[0]?.value ?? null;
   }
 
-  static open(dbPath: string): IndexStore {
-    return new IndexStore(new DatabaseSync(dbPath));
+  writeConfig(config: TacetConfig): Promise<void> {
+    return upsertMeta(this.db, this.project, "config", JSON.stringify(config));
   }
 
-  close(): void {
-    this.db.close();
-  }
-
-  getMeta(key: string): string | null {
-    const row = this.db.prepare("SELECT value FROM index_meta WHERE key = ?").get(key) as
-      | { value: string }
-      | undefined;
-    return row?.value ?? null;
-  }
-
-  /** The config used when the frontend was indexed, so later queries link endpoints the same way. */
-  writeConfig(config: TacetConfig): void {
-    this.setMeta("config", JSON.stringify(config));
-  }
-
-  readConfig(): TacetConfig {
-    return JSON.parse(this.getMeta("config") ?? "{}") as TacetConfig;
-  }
-
-  private setMeta(key: string, value: string): void {
-    this.db
-      .prepare(
-        "INSERT INTO index_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      )
-      .run(key, value);
-  }
-
-  private tableExists(name: string): boolean {
-    return (
-      this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !==
-      undefined
-    );
+  async readConfig(): Promise<TacetConfig> {
+    return JSON.parse((await this.getMeta("config")) ?? "{}") as TacetConfig;
   }
 
   // -------------------------------------------------------------------------
   // Writes
   // -------------------------------------------------------------------------
 
-  /**
-   * Syncs the frontend part of the index with a manifest. Only rows that
-   * actually changed are written, and the files they belong to are reported,
-   * so callers can tell which parts of the frontend a code change touched.
-   */
-  writeManifest(manifest: FrontendManifest): FrontendIndexUpdate {
+  async writeManifest(manifest: FrontendManifest): Promise<FrontendIndexUpdate> {
     const changed = new Set<string>();
-    this.transaction(() => {
-      this.sync("files", manifest.files.map((f) => ({ id: f.path, file: f.path, columns: {}, value: f })), changed);
-      this.sync(
-        "functions",
-        manifest.functions.map((f) => ({ id: f.id, file: f.file, columns: { name: f.name }, value: f })),
-        changed,
-      );
-      this.sync(
+    await this.write(async (tx) => {
+      const sync = (table: Table, rows: SyncRow[]) => this.sync(tx, table, rows, changed);
+      await sync("files", manifest.files.map((f) => ({ id: f.path, file: f.path, columns: {}, value: f })));
+      await sync("functions", manifest.functions.map((f) => ({ id: f.id, file: f.file, columns: { name: f.name }, value: f })));
+      await sync(
         "api_calls",
         manifest.apiCalls.map((c) => ({
           id: c.id,
@@ -135,55 +248,41 @@ export class IndexStore {
           columns: { method: c.method, endpoint_pattern: c.endpointPattern },
           value: c,
         })),
-        changed,
       );
-      this.sync(
+      await sync(
         "property_accesses",
-        manifest.propertyAccesses.map((a) => ({
-          id: a.id,
-          file: a.file,
-          columns: { api_call_id: a.apiCallId },
-          value: a,
-        })),
-        changed,
+        manifest.propertyAccesses.map((a) => ({ id: a.id, file: a.file, columns: { api_call_id: a.apiCallId }, value: a })),
       );
-      this.sync(
-        "routes",
-        (manifest.routes ?? []).map((r) => ({ id: r.id, file: r.file, columns: {}, value: r })),
-        changed,
-      );
-      this.setMeta("language", manifest.language);
-      this.setMeta("rootDir", manifest.rootDir);
-      this.setMeta("generatedAt", manifest.generatedAt);
+      await sync("routes", (manifest.routes ?? []).map((r) => ({ id: r.id, file: r.file, columns: {}, value: r })));
+      await this.setMeta(tx, { language: manifest.language, rootDir: manifest.rootDir, generatedAt: manifest.generatedAt });
     });
-    return { summary: this.summary(), changedFiles: [...changed].sort() };
+    return { summary: await this.summary(), changedFiles: [...changed].sort() };
   }
 
-  writeBackendManifest(manifest: BackendManifest): BackendIndexUpdate {
+  async writeBackendManifest(manifest: BackendManifest): Promise<BackendIndexUpdate> {
     const changedFiles = new Set<string>();
     const changedEndpoints = new Set<string>();
-    this.transaction(() => {
-      this.sync(
+    await this.write(async (tx) => {
+      await this.sync(
+        tx,
         "endpoints",
-        manifest.endpoints.map((e) => ({
-          id: e.id,
-          file: e.id,
-          columns: { method: e.method, path: e.path },
-          value: e,
-        })),
+        manifest.endpoints.map((e) => ({ id: e.id, file: e.id, columns: { method: e.method, path: e.path }, value: e })),
         changedEndpoints,
       );
-      this.sync(
+      await this.sync(
+        tx,
         "dtos",
         manifest.dtos.map((d) => ({ id: d.id, file: d.location.file, columns: { name: d.name }, value: d })),
         changedFiles,
       );
-      this.sync(
+      await this.sync(
+        tx,
         "enums",
         manifest.enums.map((e) => ({ id: e.id, file: e.location.file, columns: { name: e.name }, value: e })),
         changedFiles,
       );
-      this.sync(
+      await this.sync(
+        tx,
         "service_calls",
         (manifest.serviceCalls ?? []).map((c) => ({
           id: c.id,
@@ -193,12 +292,14 @@ export class IndexStore {
         })),
         changedFiles,
       );
-      this.setMeta("backend.gatewayRoutes", JSON.stringify(manifest.gatewayRoutes ?? []));
-      this.setMeta("backend.contextPaths", JSON.stringify(manifest.contextPaths ?? []));
-      this.setMeta("backend.language", manifest.language);
-      this.setMeta("backend.rootDir", manifest.rootDir);
-      this.setMeta("backend.generatedAt", manifest.generatedAt);
-      this.setMeta("backend.warnings", JSON.stringify(manifest.warnings));
+      await this.setMeta(tx, {
+        "backend.gatewayRoutes": JSON.stringify(manifest.gatewayRoutes ?? []),
+        "backend.contextPaths": JSON.stringify(manifest.contextPaths ?? []),
+        "backend.language": manifest.language,
+        "backend.rootDir": manifest.rootDir,
+        "backend.generatedAt": manifest.generatedAt,
+        "backend.warnings": JSON.stringify(manifest.warnings),
+      });
     });
     return {
       endpoints: manifest.endpoints.length,
@@ -207,192 +308,232 @@ export class IndexStore {
     };
   }
 
-  /**
-   * Replaces the stored relations with an ontology built from the current facts. Relations are derived data,
-   * so they are rewritten as a whole (in one transaction) rather than synced row by row.
-   */
-  writeRelations(ontology: Ontology, config: TacetConfig = {}): { entities: number; relations: number; pageApis: number } {
-    let pageApis = 0;
-    this.transaction(() => {
-      for (const table of RELATION_TABLES) this.db.exec(`DELETE FROM ${table}`);
-      const entity = this.db.prepare(
-        "INSERT INTO entities (id, class, label, file, line, status, json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      );
-      for (const e of ontology.entities) entity.run(e.id, e.class, e.label, e.file, e.line, e.status, JSON.stringify(e));
-      const relation = this.db.prepare(
-        "INSERT OR REPLACE INTO relations (subject, predicate, object, inferred, json) VALUES (?, ?, ?, ?, ?)",
-      );
-      for (const t of ontology.triples) {
-        relation.run(t.subject, t.predicate, t.object, t.inferred ? 1 : 0, JSON.stringify(t));
+  /** Relations are derived data, so they are rewritten as a whole (in one transaction) rather than synced row by row. */
+  async writeRelations(ontology: Ontology, config: TacetConfig = {}): Promise<{ entities: number; relations: number; pageApis: number }> {
+    const uses: SqlValue[][] = [];
+    const related: SqlValue[][] = [];
+    for (const page of ontology.pages) {
+      for (const api of page.apis) {
+        uses.push([page.page, api.endpoint, api.apiKey, api.status, JSON.stringify(api.via), JSON.stringify(api.fields), api.common ? 1 : 0]);
       }
-      const use = this.db.prepare(
-        "INSERT OR REPLACE INTO page_apis (page, endpoint, api_key, status, via, fields, common) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      for (const r of page.related ?? []) related.push([page.page, r.page, r.shared, JSON.stringify(r.apis)]);
+    }
+    const pageApis = unique(uses, (r) => `${r[0]}\0${r[1]}`);
+    await this.write(async (tx) => {
+      for (const table of RELATION_TABLES) await tx.run(`DELETE FROM ${table} WHERE project = ?`, [this.project]);
+      await this.insert(
+        tx,
+        "entities",
+        ["id", "class", "label", "file", "line", "status", "route_path", "component", "json"],
+        unique(ontology.entities, (e) => e.id).map((e) => [
+          e.id,
+          e.class,
+          e.label,
+          e.file,
+          e.line,
+          e.status,
+          stringAttribute(e, "path"),
+          stringAttribute(e, "component"),
+          JSON.stringify(e),
+        ]),
       );
-      const related = this.db.prepare("INSERT OR REPLACE INTO related_pages (page, related, shared, apis) VALUES (?, ?, ?, ?)");
-      for (const page of ontology.pages) {
-        for (const api of page.apis) {
-          use.run(page.page, api.endpoint, api.apiKey, api.status, JSON.stringify(api.via), JSON.stringify(api.fields), api.common ? 1 : 0);
-          pageApis++;
-        }
-        for (const r of page.related ?? []) related.run(page.page, r.page, r.shared, JSON.stringify(r.apis));
-      }
-      this.setMeta("relations.generatedAt", new Date().toISOString());
-      this.setMeta("relations.config", JSON.stringify(config));
-      this.setMeta("relations.commonApis", JSON.stringify(ontology.commonApis ?? null));
+      await this.insert(
+        tx,
+        "relations",
+        ["subject", "predicate", "object", "inferred", "json"],
+        unique(ontology.triples, (t) => `${t.subject}\0${t.predicate}\0${t.object}`).map((t) => [
+          t.subject,
+          t.predicate,
+          t.object,
+          t.inferred ? 1 : 0,
+          JSON.stringify(t),
+        ]),
+      );
+      await this.insert(tx, "page_apis", ["page", "endpoint", "api_key", "status", "via", "fields", "common"], pageApis);
+      await this.insert(tx, "related_pages", ["page", "related", "shared", "apis"], unique(related, (r) => `${r[0]}\0${r[1]}`));
+      await this.setMeta(tx, {
+        "relations.generatedAt": new Date().toISOString(),
+        "relations.config": JSON.stringify(config),
+        "relations.commonApis": JSON.stringify(ontology.commonApis ?? null),
+      });
     });
-    return { entities: ontology.entities.length, relations: ontology.triples.length, pageApis };
+    return { entities: ontology.entities.length, relations: ontology.triples.length, pageApis: pageApis.length };
   }
 
-  private transaction(work: () => void): void {
-    this.db.exec("BEGIN");
-    try {
-      work();
-      this.db.exec("COMMIT");
-    } catch (err) {
-      this.db.exec("ROLLBACK");
-      throw err;
+  async clear(): Promise<void> {
+    await this.write(async (tx) => {
+      for (const table of [...TABLES, ...RELATION_TABLES, META_TABLE]) await tx.run(`DELETE FROM ${table} WHERE project = ?`, [this.project]);
+    });
+  }
+
+  private write(work: (tx: SqlDriver) => Promise<void>): Promise<void> {
+    return this.db.transaction(work, this.project);
+  }
+
+  private async setMeta(tx: SqlDriver, values: Record<string, string>): Promise<void> {
+    for (const [key, value] of Object.entries(values)) await upsertMeta(tx, this.project, key, value);
+  }
+
+  /** Multi-row inserts of `rows` (each without the project column), upserting on the primary key when `upsert` is given. */
+  private async insert(tx: SqlDriver, table: string, columns: string[], rows: SqlValue[][], upsert?: { key: string[] }): Promise<void> {
+    const names = ["project", ...columns];
+    const perRow = names.length;
+    const chunk = Math.max(1, Math.floor(MAX_PARAMS / perRow));
+    const onConflict = upsert
+      ? ` ON CONFLICT (${upsert.key.join(", ")}) DO UPDATE SET ${columns
+          .filter((c) => !upsert.key.includes(c))
+          .map((c) => `${c} = excluded.${c}`)
+          .join(", ")}`
+      : "";
+    for (let i = 0; i < rows.length; i += chunk) {
+      const batch = rows.slice(i, i + chunk);
+      const values = batch.map(() => `(${names.map(() => "?").join(", ")})`).join(", ");
+      await tx.run(
+        `INSERT INTO ${table} (${names.join(", ")}) VALUES ${values}${onConflict}`,
+        batch.flatMap((row) => [this.project, ...row]),
+      );
     }
   }
 
   /** Upserts rows whose JSON changed and deletes rows that disappeared, recording the affected `file`s. */
-  private sync(table: Table, rows: SyncRow[], changed: Set<string>): void {
+  private async sync(tx: SqlDriver, table: Table, input: SyncRow[], changed: Set<string>): Promise<void> {
     const existing = new Map<string, { file: string; json: string }>();
-    for (const r of this.db.prepare(`SELECT id, file, json FROM ${table}`).all() as Array<{
-      id: string;
-      file: string;
-      json: string;
-    }>) {
+    for (const r of await tx.all<{ id: string; file: string; json: string }>(`SELECT id, file, json FROM ${table} WHERE project = ?`, [
+      this.project,
+    ])) {
       existing.set(r.id, { file: r.file, json: r.json });
     }
 
+    const rows = unique(input, (r) => r.id);
+    const extra = Object.keys(rows[0]?.columns ?? {});
+    const upserts: SqlValue[][] = [];
     for (const row of rows) {
       const json = JSON.stringify(row.value);
       const previous = existing.get(row.id);
       existing.delete(row.id);
       if (previous?.json === json) continue;
-
-      const columns = { id: row.id, file: row.file, ...row.columns, json };
-      const names = Object.keys(columns);
-      this.db
-        .prepare(
-          `INSERT INTO ${table} (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")})
-           ON CONFLICT(id) DO UPDATE SET ${names
-             .filter((n) => n !== "id")
-             .map((n) => `${n} = excluded.${n}`)
-             .join(", ")}`,
-        )
-        .run(...Object.values(columns));
+      upserts.push([row.id, row.file, ...extra.map((c) => row.columns[c] ?? null), json]);
       changed.add(row.file);
       if (previous) changed.add(previous.file);
     }
+    await this.insert(tx, table, ["id", "file", ...extra, "json"], upserts, { key: ["project", "id"] });
 
-    const remove = this.db.prepare(`DELETE FROM ${table} WHERE id = ?`);
-    for (const [id, previous] of existing) {
-      remove.run(id);
-      changed.add(previous.file);
+    const removed = [...existing.keys()];
+    for (let i = 0; i < removed.length; i += MAX_PARAMS - 1) {
+      const batch = removed.slice(i, i + MAX_PARAMS - 1);
+      await tx.run(`DELETE FROM ${table} WHERE project = ? AND id IN (${batch.map(() => "?").join(", ")})`, [this.project, ...batch]);
     }
+    for (const id of removed) changed.add(existing.get(id)!.file);
   }
 
   // -------------------------------------------------------------------------
   // Reads
   // -------------------------------------------------------------------------
 
-  summary(): IndexSummary {
-    const count = (sql: string): number => (this.db.prepare(sql).get() as { c: number }).c;
+  async summary(): Promise<IndexSummary> {
+    const count = async (table: string, where = ""): Promise<number> => {
+      const rows = await this.db.all<{ c: number | string }>(
+        `SELECT CAST(COUNT(*) AS INTEGER) AS c FROM ${table} WHERE project = ?${where}`,
+        [this.project],
+      );
+      return Number(rows[0]?.c ?? 0);
+    };
     return {
-      files: count("SELECT COUNT(*) AS c FROM files"),
-      functions: count("SELECT COUNT(*) AS c FROM functions"),
-      apiCalls: count("SELECT COUNT(*) AS c FROM api_calls"),
-      resolvedApiCalls: count("SELECT COUNT(*) AS c FROM api_calls WHERE endpoint_pattern IS NOT NULL"),
-      propertyAccesses: count("SELECT COUNT(*) AS c FROM property_accesses"),
+      files: await count("files"),
+      functions: await count("functions"),
+      apiCalls: await count("api_calls"),
+      resolvedApiCalls: await count("api_calls", " AND endpoint_pattern IS NOT NULL"),
+      propertyAccesses: await count("property_accesses"),
     };
   }
 
-  private rows<T>(sql: string, ...params: SQLInputValue[]): T[] {
-    return (this.db.prepare(sql).all(...params) as Array<{ json: string }>).map(
-      (r) => JSON.parse(r.json) as T,
-    );
+  /** JSON values of the rows `sql` selects; `sql` filters on `project = ?` first. */
+  private async rows<T>(sql: string, ...params: SqlValue[]): Promise<T[]> {
+    const rows = await this.db.all<{ json: string }>(sql, [this.project, ...params]);
+    return rows.map((r) => JSON.parse(r.json) as T);
   }
 
-  listFiles(): FileInfo[] {
-    return this.rows("SELECT json FROM files ORDER BY id");
+  listFiles(): Promise<FileInfo[]> {
+    return this.rows("SELECT json FROM files WHERE project = ? ORDER BY id");
   }
 
-  listFunctions(): FunctionInfo[] {
-    return this.rows("SELECT json FROM functions ORDER BY file, id");
+  listFunctions(): Promise<FunctionInfo[]> {
+    return this.rows("SELECT json FROM functions WHERE project = ? ORDER BY file, id");
   }
 
-  listApiCalls(): ApiCallInfo[] {
-    return this.rows("SELECT json FROM api_calls ORDER BY file, id");
+  listApiCalls(): Promise<ApiCallInfo[]> {
+    return this.rows("SELECT json FROM api_calls WHERE project = ? ORDER BY file, id");
   }
 
-  listPropertyAccesses(): PropertyAccessInfo[] {
-    return this.rows("SELECT json FROM property_accesses ORDER BY file, id");
+  listPropertyAccesses(): Promise<PropertyAccessInfo[]> {
+    return this.rows("SELECT json FROM property_accesses WHERE project = ? ORDER BY file, id");
   }
 
-  listRoutes(): RouteInfo[] {
-    return this.rows("SELECT json FROM routes ORDER BY id");
+  listRoutes(): Promise<RouteInfo[]> {
+    return this.rows("SELECT json FROM routes WHERE project = ? ORDER BY id");
   }
 
-  findApiCallsByEndpoint(method: string, endpointPattern: string): ApiCallInfo[] {
+  findApiCallsByEndpoint(method: string, endpointPattern: string): Promise<ApiCallInfo[]> {
     return this.rows(
-      "SELECT json FROM api_calls WHERE method = ? AND endpoint_pattern = ? ORDER BY file, id",
+      "SELECT json FROM api_calls WHERE project = ? AND method = ? AND endpoint_pattern = ? ORDER BY file, id",
       method,
       endpointPattern,
     );
   }
 
-  findPropertyAccessesForApiCall(apiCallId: string): PropertyAccessInfo[] {
-    return this.rows("SELECT json FROM property_accesses WHERE api_call_id = ? ORDER BY file, id", apiCallId);
+  findPropertyAccessesForApiCall(apiCallId: string): Promise<PropertyAccessInfo[]> {
+    return this.rows("SELECT json FROM property_accesses WHERE project = ? AND api_call_id = ? ORDER BY file, id", apiCallId);
   }
 
   // ---- relations
 
-  hasRelations(): boolean {
-    return this.getMeta("relations.generatedAt") !== null;
+  async hasRelations(): Promise<boolean> {
+    return (await this.getMeta("relations.generatedAt")) !== null;
   }
 
-  /** Whether the stored relations were built with this config (e.g. the same common-API rule). */
-  relationsBuiltWith(config: TacetConfig): boolean {
-    return this.getMeta("relations.config") === JSON.stringify(config);
+  async relationsBuiltWith(config: TacetConfig): Promise<boolean> {
+    return (await this.getMeta("relations.config")) === JSON.stringify(config);
   }
 
-  getEntity(id: string): OntologyEntity | null {
-    const row = this.db.prepare("SELECT json FROM entities WHERE id = ?").get(id) as { json: string } | undefined;
-    return row ? (JSON.parse(row.json) as OntologyEntity) : null;
+  async getEntity(id: string): Promise<OntologyEntity | null> {
+    const [entity] = await this.rows<OntologyEntity>("SELECT json FROM entities WHERE project = ? AND id = ?", id);
+    return entity ?? null;
   }
 
-  /** Entities whose id, label, route path or page component is exactly `key`, optionally of one class. */
-  findEntitiesByKey(key: string, cls?: string): OntologyEntity[] {
-    const match =
-      "(id = ? OR label = ? OR json_extract(json, '$.attributes.path') = ? OR json_extract(json, '$.attributes.component') = ?)";
+  findEntitiesByKey(key: string, cls?: string): Promise<OntologyEntity[]> {
+    const match = "project = ? AND (id = ? OR label = ? OR route_path = ? OR component = ?)";
     return cls
       ? this.rows(`SELECT json FROM entities WHERE ${match} AND class = ? ORDER BY id`, key, key, key, key, cls)
       : this.rows(`SELECT json FROM entities WHERE ${match} ORDER BY id`, key, key, key, key);
   }
 
-  /** Relations matching every given part (entity ids), e.g. { predicate: "renders", object: "fn:..." }. */
-  queryRelations(query: RelationQuery = {}): OntologyTriple[] {
-    const where: string[] = [];
-    const params: SQLInputValue[] = [];
+  queryRelations(query: RelationQuery = {}): Promise<OntologyTriple[]> {
+    const where = ["project = ?"];
+    const params: SqlValue[] = [];
     for (const key of ["subject", "predicate", "object"] as const) {
       if (query[key] !== undefined) {
         where.push(`${key} = ?`);
         params.push(query[key]!);
       }
     }
-    const sql = `SELECT json FROM relations${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY subject, predicate, object${
-      query.limit ? ` LIMIT ${Math.max(1, Math.floor(query.limit))}` : ""
-    }`;
-    return this.rows(sql, ...params);
+    const limit = query.limit ? ` LIMIT ${Math.max(1, Math.floor(query.limit))}` : "";
+    return this.rows(`SELECT json FROM relations WHERE ${where.join(" AND ")} ORDER BY subject, predicate, object${limit}`, ...params);
   }
 
-  /** Pages using an API (endpoint entity id), or the APIs a page uses (page entity id). */
-  pageApis(by: { page?: string; endpoint?: string }): StoredPageApi[] {
+  async pageApis(by: { page?: string; endpoint?: string }): Promise<StoredPageApi[]> {
     const [column, value] = by.page !== undefined ? ["page", by.page] : ["endpoint", by.endpoint ?? ""];
-    const rows = this.db
-      .prepare(`SELECT page, endpoint, api_key, status, via, fields, common FROM page_apis WHERE ${column} = ? ORDER BY page, common, api_key`)
-      .all(value) as Array<{ page: string; endpoint: string; api_key: string; status: string | null; via: string; fields: string; common: number }>;
+    const rows = await this.db.all<{
+      page: string;
+      endpoint: string;
+      api_key: string;
+      status: string | null;
+      via: string;
+      fields: string;
+      common: number;
+    }>(
+      `SELECT page, endpoint, api_key, status, via, fields, common FROM page_apis WHERE project = ? AND ${column} = ? ORDER BY page, common, api_key`,
+      [this.project, value],
+    );
     return rows.map((r) => ({
       page: r.page,
       endpoint: r.endpoint,
@@ -400,47 +541,58 @@ export class IndexStore {
       status: r.status as PageApiUse["status"],
       via: JSON.parse(r.via) as string[],
       fields: JSON.parse(r.fields) as string[],
-      ...(r.common ? { common: true } : {}),
+      ...(Number(r.common) ? { common: true } : {}),
     }));
   }
 
-  /** Pages sharing the most non-common APIs with a page (page entity id). */
-  relatedPages(page: string): Array<Omit<RelatedPage, "route" | "component">> {
-    const rows = this.db
-      .prepare("SELECT related, shared, apis FROM related_pages WHERE page = ? ORDER BY shared DESC, related")
-      .all(page) as Array<{ related: string; shared: number; apis: string }>;
-    return rows.map((r) => ({ page: r.related, shared: r.shared, apis: JSON.parse(r.apis) as string[] }));
+  async relatedPages(page: string): Promise<Array<Omit<RelatedPage, "route" | "component">>> {
+    const rows = await this.db.all<{ related: string; shared: number; apis: string }>(
+      "SELECT related, shared, apis FROM related_pages WHERE project = ? AND page = ? ORDER BY shared DESC, related",
+      [this.project, page],
+    );
+    return rows.map((r) => ({ page: r.related, shared: Number(r.shared), apis: JSON.parse(r.apis) as string[] }));
   }
 
-  /** The frontend manifest stored in the index, or null when no frontend has been indexed. */
-  readFrontendManifest(): FrontendManifest | null {
-    if (this.getMeta("language") === null) return null;
+  async readFrontendManifest(): Promise<FrontendManifest | null> {
+    if ((await this.getMeta("language")) === null) return null;
     return {
       language: "typescript",
-      rootDir: this.getMeta("rootDir") ?? "",
-      generatedAt: this.getMeta("generatedAt") ?? "",
-      files: this.listFiles(),
-      functions: this.listFunctions(),
-      apiCalls: this.listApiCalls(),
-      propertyAccesses: this.listPropertyAccesses(),
-      routes: this.listRoutes(),
+      rootDir: (await this.getMeta("rootDir")) ?? "",
+      generatedAt: (await this.getMeta("generatedAt")) ?? "",
+      files: await this.listFiles(),
+      functions: await this.listFunctions(),
+      apiCalls: await this.listApiCalls(),
+      propertyAccesses: await this.listPropertyAccesses(),
+      routes: await this.listRoutes(),
     };
   }
 
-  /** The backend manifest stored in the index, or null when no backend has been extracted. */
-  readBackendManifest(): BackendManifest | null {
-    if (this.getMeta("backend.language") === null) return null;
+  async readBackendManifest(): Promise<BackendManifest | null> {
+    if ((await this.getMeta("backend.language")) === null) return null;
+    const meta = async (key: string, fallback: string) => (await this.getMeta(key)) ?? fallback;
     return {
       language: "java",
-      rootDir: this.getMeta("backend.rootDir") ?? "",
-      generatedAt: this.getMeta("backend.generatedAt") ?? "",
-      endpoints: this.rows<EndpointInfo>("SELECT json FROM endpoints ORDER BY path, method"),
-      dtos: this.rows<DtoInfo>("SELECT json FROM dtos ORDER BY id"),
-      enums: this.rows<EnumInfo>("SELECT json FROM enums ORDER BY id"),
-      serviceCalls: this.rows<ServiceCallInfo>("SELECT json FROM service_calls ORDER BY id"),
-      gatewayRoutes: JSON.parse(this.getMeta("backend.gatewayRoutes") ?? "[]"),
-      contextPaths: JSON.parse(this.getMeta("backend.contextPaths") ?? "[]"),
-      warnings: JSON.parse(this.getMeta("backend.warnings") ?? "[]"),
+      rootDir: await meta("backend.rootDir", ""),
+      generatedAt: await meta("backend.generatedAt", ""),
+      endpoints: await this.rows<EndpointInfo>("SELECT json FROM endpoints WHERE project = ? ORDER BY path, method"),
+      dtos: await this.rows<DtoInfo>("SELECT json FROM dtos WHERE project = ? ORDER BY id"),
+      enums: await this.rows<EnumInfo>("SELECT json FROM enums WHERE project = ? ORDER BY id"),
+      serviceCalls: await this.rows<ServiceCallInfo>("SELECT json FROM service_calls WHERE project = ? ORDER BY id"),
+      gatewayRoutes: JSON.parse(await meta("backend.gatewayRoutes", "[]")),
+      contextPaths: JSON.parse(await meta("backend.contextPaths", "[]")),
+      warnings: JSON.parse(await meta("backend.warnings", "[]")),
     };
   }
+}
+
+/** Last occurrence wins, like the per-row upserts the store used to do; keeps first-seen order. */
+function unique<T>(items: T[], key: (item: T) => string): T[] {
+  const byKey = new Map<string, T>();
+  for (const item of items) byKey.set(key(item), item);
+  return [...byKey.values()];
+}
+
+function stringAttribute(entity: OntologyEntity, name: string): string | null {
+  const value = (entity.attributes as Record<string, unknown> | undefined)?.[name];
+  return typeof value === "string" ? value : null;
 }

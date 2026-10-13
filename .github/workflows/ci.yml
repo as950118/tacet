@@ -11,6 +11,19 @@ jobs:
     strategy:
       matrix:
         node: [22, 24]
+    # The index store and HTTP API tests also run against PostgreSQL.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tacet
+          POSTGRES_PASSWORD: tacet
+          POSTGRES_DB: tacet
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tacet" --health-interval 2s --health-timeout 5s --health-retries 15
+    env:
+      TACET_TEST_POSTGRES_URL: postgres://tacet:tacet@localhost:5432/tacet
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,3 +64,22 @@ jobs:
         with:
           name: tacet-graph
           path: .tacet/graph.html
+
+  deploy-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Dashboard (web/, Vercel)
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+        env:
+          TACET_API_URL: http://localhost:4318
+      - name: API image (Dockerfile, Koyeb)
+        run: docker build -t tacet-api .

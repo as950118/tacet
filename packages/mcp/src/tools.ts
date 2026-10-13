@@ -5,7 +5,6 @@ import {
   attachGraph,
   findEntities,
   mergeGraphs,
-  pagesByApi,
   renderChangeReportMarkdown,
   renderHtml,
   renderMermaid,
@@ -19,8 +18,10 @@ import { TacetWorkspace, createAiProvider } from "@tacet-api/cli";
 import type { AiProvider } from "@tacet-api/core";
 
 export interface TacetToolOptions {
-  /** Index database. Defaults to .tacet/index.db (relative to the server's cwd). */
+  /** Index database: a SQLite file (default .tacet/index.db, relative to the server's cwd) or a postgres:// URL. */
   indexPath?: string;
+  /** Project in the index database (default "default"). */
+  project?: string;
   configPath?: string;
   /** Default frontend root, so clients can call index_frontend without knowing paths. */
   frontendDir?: string;
@@ -54,7 +55,7 @@ const graphOption = z
 
 /** Framework-neutral Tacet tool definitions (zod schemas + JSON-returning handlers). */
 export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
-  const ws = options.workspace ?? new TacetWorkspace(options.indexPath, options.configPath);
+  const ws = options.workspace ?? new TacetWorkspace(options.indexPath, options.configPath, { project: options.project });
   const frontendDir = (dir?: string) => required(dir ?? options.frontendDir, "frontendDir");
   const backendDir = (dir?: string) => required(dir ?? options.backendDir, "backendDir");
 
@@ -162,7 +163,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
         '"GET /users/:id", or a path alone for all methods.',
       parameters: { api: z.string().describe('e.g. "GET /users/{id}"'), graph: graphOption },
       readOnly: true,
-      run: async (a) => ws.impact().impactOfApi(a.api).map((i) => attachGraph(i, a.graph)),
+      run: async (a) => (await ws.impact()).impactOfApi(a.api).map((i) => attachGraph(i, a.graph)),
     }),
     tool({
       name: "impact_of_file",
@@ -172,7 +173,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
         "their callers, files importing it, and the blast radius (APIs, files, components).",
       parameters: { file: z.string().describe("Frontend file, relative to the frontend root or absolute"), graph: graphOption },
       readOnly: true,
-      run: async (a) => attachGraph(ws.impact().impactOfFile(ws.toIndexPath(a.file)), a.graph),
+      run: async (a) => attachGraph((await ws.impact()).impactOfFile(await ws.toIndexPath(a.file)), a.graph),
     }),
     tool({
       name: "impact_of_field",
@@ -182,7 +183,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
         'a nested path like "UserResponse.profile.email", or a fully qualified name.',
       parameters: { field: z.string().describe('e.g. "UserResponse.name"'), graph: graphOption },
       readOnly: true,
-      run: async (a) => ws.impact().impactOfField(a.field).map((i) => attachGraph(i, a.graph)),
+      run: async (a) => (await ws.impact()).impactOfField(a.field).map((i) => attachGraph(i, a.graph)),
     }),
     tool({
       name: "search",
@@ -190,7 +191,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
       description: "Search APIs, frontend files, functions, components, DTOs and fields; each hit reports how many APIs and files it touches.",
       parameters: { query: z.string().describe("Case-insensitive substring") },
       readOnly: true,
-      run: async (a) => ws.impact().search(a.query),
+      run: async (a) => (await ws.impact()).search(a.query),
     }),
     tool({
       name: "impact_summary",
@@ -198,7 +199,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
       description: "Rank every API by the number of frontend files and components using it, rank files by APIs used, and list backend endpoints no frontend code calls.",
       parameters: {},
       readOnly: true,
-      run: async () => ws.impact().summary(),
+      run: async () => (await ws.impact()).summary(),
     }),
     tool({
       name: "page_apis",
@@ -213,18 +214,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
         api: z.string().optional().describe('API, e.g. "GET /users/{id}" or "/users" (substring match)'),
       },
       readOnly: true,
-      run: async (a) => {
-        const ontology = ws.ontology({ includeFiles: false });
-        if (a.api) {
-          const q = a.api.toLowerCase();
-          return pagesByApi(ontology).filter((row) => row.apiKey.toLowerCase().includes(q));
-        }
-        if (!a.page) return ontology.pages;
-        const q = a.page.toLowerCase();
-        return ontology.pages.filter(
-          (p) => (p.route ?? "").toLowerCase().includes(q) || p.component.toLowerCase().includes(q),
-        );
-      },
+      run: async (a) => ws.pageApis(a),
     }),
     tool({
       name: "relations",
@@ -259,7 +249,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
       },
       readOnly: true,
       run: async (a) => {
-        const report = ws.usage(a.also);
+        const report = await ws.usage(a.also);
         return a.all
           ? report
           : { ...report, endpoints: report.endpoints.filter((e) => e.usage === "unused" || e.usage === "client-declared") };
@@ -283,7 +273,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
       },
       readOnly: false,
       run: async (a) => {
-        const ontology = ws.ontology({ focus: a.focus, depth: a.depth, includeFiles: a.includeFiles || a.format === "html" });
+        const ontology = await ws.ontology({ focus: a.focus, depth: a.depth, includeFiles: a.includeFiles || a.format === "html" });
         if (a.focus && !findEntities(ontology, a.focus).length) {
           return { error: `No entity matches "${a.focus}". Try the search tool.`, stats: ontology.stats };
         }
@@ -292,7 +282,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
         if (a.format === "html") {
           const out = resolve(a.outPath ?? ".tacet/ontology.html");
           mkdirSync(dirname(out), { recursive: true });
-          const usage = ws.hasBackendBaseline() ? ws.usage() : undefined;
+          const usage = (await ws.hasBackendBaseline()) ? await ws.usage() : undefined;
           writeFileSync(out, renderOntologyHtml(ontology, { title: `Tacet ontology${a.focus ? `: ${a.focus}` : ""}`, usage }));
           return { path: out, stats: ontology.stats };
         }
@@ -314,11 +304,11 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
       },
       readOnly: false,
       run: async (a) => {
-        const analyzer = ws.impact();
+        const analyzer = await ws.impact();
         const graph = a.api
           ? mergeGraphs(analyzer.impactOfApi(a.api).map((i) => i.graph))
           : a.file
-            ? analyzer.impactOfFile(ws.toIndexPath(a.file)).graph
+            ? analyzer.impactOfFile(await ws.toIndexPath(a.file)).graph
             : a.field
               ? mergeGraphs(analyzer.impactOfField(a.field).map((i) => i.graph))
               : analyzer.fullGraph();

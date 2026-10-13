@@ -210,8 +210,9 @@ breadcrumb). 기본값 "API paths only"는 API까지 이어지지 않는 UI 컴�
 
 ### 4-2. 관계는 index DB에 저장된다
 
-`index`/`extract-backend`가 index를 갱신할 때마다 관계(ontology)를 다시 계산해 같은 SQLite 파일의 `entities`, `relations`,
-`page_apis` 테이블에 저장한다. 다시 분석하지 않고 바로 조회할 수 있다.
+`index`/`extract-backend`가 index를 갱신할 때마다 관계(ontology)를 다시 계산해 같은 index DB(SQLite 파일 또는 PostgreSQL,
+[4-4](#4-4-index-db--sqlite-파일-또는-postgresql))의 `entities`, `relations`, `page_apis` 테이블에 저장한다. 다시 분석하지 않고
+바로 조회할 수 있다.
 
 ```bash
 tacet relations --page "/users/:id"                      # 이 페이지가 쓰는 API (호출 경로, 읽는 필드)
@@ -220,13 +221,17 @@ tacet relations --subject UserPage --predicate renders   # 관계 직접 조회 
 ```
 
 ```sql
+-- 모든 행은 project 컬럼을 가진다 (--project 생략 시 'default')
 -- 이 API를 쓰는 페이지
-SELECT e.label, p.via, p.fields FROM page_apis p JOIN entities e ON e.id = p.page WHERE p.api_key = 'GET /users/{id}';
+SELECT e.label, p.via, p.fields FROM page_apis p JOIN entities e ON e.project = p.project AND e.id = p.page
+WHERE p.project = 'default' AND p.api_key = 'GET /users/{id}';
 -- 백엔드에 없는 API를 쓰는 페이지
-SELECT e.label, p.api_key, p.status FROM page_apis p JOIN entities e ON e.id = p.page WHERE p.status IN ('not-found', 'method-mismatch');
+SELECT e.label, p.api_key, p.status FROM page_apis p JOIN entities e ON e.project = p.project AND e.id = p.page
+WHERE p.project = 'default' AND p.status IN ('not-found', 'method-mismatch');
 -- 어떤 컴포넌트를 렌더링하는 곳
-SELECT s.label, s.file FROM relations r JOIN entities s ON s.id = r.subject JOIN entities o ON o.id = r.object
-WHERE r.predicate = 'renders' AND o.label = 'UserCard';
+SELECT s.label, s.file FROM relations r
+JOIN entities s ON s.project = r.project AND s.id = r.subject JOIN entities o ON o.project = r.project AND o.id = r.object
+WHERE r.project = 'default' AND r.predicate = 'renders' AND o.label = 'UserCard';
 ```
 
 ### 4-3. 미사용 API — 아무도 부르지 않는 endpoint
@@ -258,6 +263,23 @@ endpoint 목록(다른 method 사용 여부, gateway 미노출, 호출하는 Fei
 삭제 후보 목록이지 삭제해도 된다는 판정은 아니다. 분석한 코드 밖의 호출자(다른 저장소, 배치, 외부 시스템, URL을 직접
 조립하는 RestTemplate/WebClient)와 URL을 정적으로 알 수 없는 frontend 호출은 보이지 않는다(보고서에 개수가 나온다).
 운영 접근 로그와 교차 확인할 것.
+
+### 4-4. Index DB — SQLite 파일 또는 PostgreSQL
+
+index는 기본적으로 `.tacet/index.db`(SQLite, 설치 없이 동작)에 저장된다. `--index`(또는 `$TACET_INDEX`)에 PostgreSQL URL을
+주면 외부 DB에 저장하고, `--project`(또는 `$TACET_PROJECT`)로 한 DB에 여러 프론트엔드 앱을 나눠 담는다.
+
+```bash
+export TACET_INDEX='postgres://tacet:****@db.internal:5432/tacet?schema=tacet'   # 테이블은 schema(기본 tacet)에 생성
+tacet -p admin index ./admin-web && tacet -p admin extract-backend ./backend
+tacet -p shop  index ./shop-web  && tacet -p shop  extract-backend ./backend
+tacet projects                                     # DB에 있는 프로젝트와 마지막 인덱싱 시각
+tacet -p admin unused --also-projects shop         # 두 앱 모두에서 안 쓰는 API
+```
+
+- 비밀번호가 프로세스 목록에 보이지 않도록 URL은 `--index`보다 `$TACET_INDEX`로 넘기는 것을 권장한다(Python 클라이언트는 자동으로 그렇게 한다). 출력에는 `***`로 가려진다.
+- 같은 프로젝트를 동시에 인덱싱하면 PostgreSQL advisory lock으로 순서대로 처리된다.
+- 저장 계층은 `IndexStore` 인터페이스(`@tacet-api/core`) 뒤에 있어서 CLI, MCP, HTTP API가 DB 종류를 모른다. index는 소스에서 다시 만들 수 있는 파생 데이터라 스키마 버전이 바뀌면 마이그레이션 대신 다시 생성한다(PostgreSQL에서는 지정한 schema 안의 Tacet 테이블만).
 
 ### 5. Backend API 변경 → Frontend 영향
 
@@ -382,6 +404,36 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
 다른 MCP 프레임워크에는 `createTacetTools()`(zod schema + JSON 반환 handler)를, 코드에서 직접 쓸 때는
 `TacetWorkspace`(`@tacet-api/cli`)를 사용한다. workspace는 파싱된 frontend를 메모리에 유지해서 반복 갱신이 빠르다.
 
+### 9. HTTP API (`tacet serve`)
+
+index DB의 모든 프로젝트를 REST API로 제공한다. 대시보드, 다른 서비스, 사내 포털에서 MCP 없이 조회할 때 쓴다.
+라우트 전체는 `GET /openapi.json`(OpenAPI 3.1)에 있다.
+
+```bash
+TACET_API_TOKEN=... tacet serve --port 4318 --allow-dir /srv/repos     # 기본 127.0.0.1, --host 0.0.0.0은 토큰 필수
+curl -H "Authorization: Bearer $TACET_API_TOKEN" localhost:4318/projects/admin/pages?api=GET%20/users
+```
+
+| Method | Path | 내용 |
+|---|---|---|
+| GET | `/health`, `/openapi.json` | 상태·버전·DB 종류 / API 문서 (토큰 불필요) |
+| GET | `/projects` | 프로젝트 목록과 마지막 인덱싱 시각 |
+| GET / DELETE | `/projects/{p}` | 프로젝트 index 요약 / 삭제 |
+| POST | `/projects/{p}/frontend` | `{dir, files?, changedSince?, config?, check?}` 프론트엔드 인덱싱 |
+| POST | `/projects/{p}/backend` | `{dir}` Spring Boot 계약 추출 |
+| POST | `/projects/{p}/analyze` | `{dir, save?}` 저장된 계약 대비 backend 변경 영향 |
+| GET | `/projects/{p}/pages` | 페이지 ↔ API (`?page=`, `?api=`) |
+| GET | `/projects/{p}/relations` | `?page=` / `?api=` / `?subject=&predicate=&object=` |
+| GET | `/projects/{p}/ontology` | `?focus=&depth=&format=json\|mermaid\|turtle\|html` |
+| GET | `/projects/{p}/check` | 계약 검사 (`?files=a,b`, `?changedSince=`) |
+| GET | `/projects/{p}/impact` | `?api=` / `?file=` / `?field=` (없으면 전체 순위), `&graph=` |
+| GET | `/projects/{p}/search`, `/graph`, `/unused` | 검색 `?q=` / 영향 그래프 / 미사용 API (`?also=다른프로젝트`) |
+
+- 인덱싱 엔드포인트는 서버의 경로를 읽으므로 `--allow-dir`(기본: 현재 디렉터리) 안의 경로만 받는다. 같은 프로젝트의 쓰기는 순서대로 처리된다.
+- `--read-only`(또는 `TACET_READ_ONLY=true`)면 조회 라우트만 연다. 인덱싱·삭제는 403으로 거부한다. 데이터를 다른 곳(로컬 CLI, CI)에서 넣는 공개 서버용이다.
+- 배포(Supabase + Koyeb + Vercel 대시보드 `web/`)는 [DEPLOY.md](./DEPLOY.md) 참고.
+- 브라우저에서 호출하려면 `--cors <origin>`. 라이브러리로는 `createTacetApiServer()`(`@tacet-api/cli`)의 `handle(req, res)`를 기존 Node 서버에 붙일 수 있다.
+
 ### tacet.config.json
 
 ```json
@@ -429,6 +481,7 @@ register_tools(mcp, frontend_dir="./frontend", backend_dir="./backend", prefix="
 | 6 | AI verification (provider 추상화, Anthropic 구현, evidence 검증) | ✅ |
 | 7 | Git diff / CI integration (GitHub Action, CI script, Markdown 리포트) | ✅ |
 | - | Library API / MCP (stdio 서버, TS fastmcp, Python FastMCP) | ✅ |
+| - | 외부 index DB (PostgreSQL, 프로젝트별 분리) + HTTP API (`tacet serve`, OpenAPI) | ✅ |
 | - | 배포: npm, PyPI, Gradle/Maven 플러그인 | ✅ (게시 준비 완료) |
 
 ## 릴리스
