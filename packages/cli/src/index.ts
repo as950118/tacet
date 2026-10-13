@@ -6,6 +6,7 @@ export type {
   DiffBackendOptions,
   GitChangeReport,
   IndexStatus,
+  SnapshotKind,
   PageApisQuery,
   WorkspaceOptions,
   ExtractBackendOptions,

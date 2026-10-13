@@ -23,4 +23,5 @@ USER node
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 # TACET_INDEX (database URL) and TACET_API_TOKEN come from the environment; the token is required off loopback.
-CMD ["node", "packages/cli/dist/bin.js", "serve", "--host", "0.0.0.0"]
+# Without TACET_INDEX the server would try a SQLite file inside the read-only image: fail with the reason instead.
+CMD ["sh", "-c", "[ -n \"$TACET_INDEX\" ] || { echo 'TACET_INDEX is not set: give the index database URL (e.g. Supabase session pooler)' >&2; exit 1; }; exec node packages/cli/dist/bin.js serve --host 0.0.0.0"]

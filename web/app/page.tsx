@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { tacet, type ProjectInfo } from "@/lib/tacet";
+import { getProjects } from "@/lib/data";
+import type { ProjectInfo } from "@/lib/tacet";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +9,7 @@ const when = (side: ProjectInfo["frontend"]) => side?.generatedAt.slice(0, 16).r
 export default async function Home() {
   let projects: ProjectInfo[];
   try {
-    projects = await tacet<ProjectInfo[]>("/projects");
+    projects = await getProjects();
   } catch (err) {
     return <div className="panel error">Tacet API에 연결하지 못했습니다: {(err as Error).message}</div>;
   }

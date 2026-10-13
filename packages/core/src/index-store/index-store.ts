@@ -14,7 +14,7 @@ import type {
 } from "../ir/types.js";
 import type { Ontology, OntologyEntity, OntologyTriple, PageApiUse, RelatedPage } from "../analysis/ontology.js";
 import { openSqlDriver, type SqlDriver, type SqlValue } from "./driver.js";
-import { GLOBAL_PROJECT, META_TABLE, RELATION_TABLES, SCHEMA_VERSION, TABLES, schemaSql, type SqlDialect } from "./schema.js";
+import { GLOBAL_PROJECT, META_TABLE, RELATION_TABLES, SCHEMA_VERSION, SNAPSHOT_TABLE, TABLES, schemaSql, type SqlDialect } from "./schema.js";
 
 /** The project used when none is named: a SQLite file usually holds just one. */
 export const DEFAULT_PROJECT = "default";
@@ -50,6 +50,12 @@ export interface BackendIndexUpdate {
   dtos: number;
   /** Endpoint ids that were added, changed or removed. */
   changedEndpoints: string[];
+}
+
+export interface Snapshot {
+  fingerprint: string;
+  generatedAt: string;
+  json: string;
 }
 
 export interface ProjectInfo {
@@ -106,6 +112,9 @@ export interface IndexStore {
   readFrontendManifest(): Promise<FrontendManifest | null>;
   /** The backend manifest stored in the index, or null when no backend has been extracted. */
   readBackendManifest(): Promise<BackendManifest | null>;
+  /** Stores a precomputed result (JSON text) under `kind`, tagged with the index state it was computed from. */
+  writeSnapshot(kind: string, fingerprint: string, json: string): Promise<void>;
+  readSnapshot(kind: string): Promise<Snapshot | null>;
   /** Removes everything stored for this project. */
   clear(): Promise<void>;
 }
@@ -130,7 +139,7 @@ export async function openIndexDatabase(location: string): Promise<IndexDatabase
     await driver.transaction(async (tx) => {
       const version = await schemaVersion(tx);
       if (version !== null && version !== String(SCHEMA_VERSION)) {
-        for (const table of [...TABLES, ...RELATION_TABLES, META_TABLE]) await tx.exec(`DROP TABLE IF EXISTS ${table}`);
+        for (const table of [...TABLES, ...RELATION_TABLES, SNAPSHOT_TABLE, META_TABLE]) await tx.exec(`DROP TABLE IF EXISTS ${table}`);
       }
       await tx.exec(schemaSql(driver.dialect));
       await upsertMeta(tx, GLOBAL_PROJECT, "schemaVersion", String(SCHEMA_VERSION));
@@ -360,9 +369,28 @@ class SqlIndexStore implements IndexStore {
     return { entities: ontology.entities.length, relations: ontology.triples.length, pageApis: pageApis.length };
   }
 
+  async writeSnapshot(kind: string, fingerprint: string, json: string): Promise<void> {
+    await this.db.run(
+      `INSERT INTO ${SNAPSHOT_TABLE} (project, kind, fingerprint, generated_at, json) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (project, kind) DO UPDATE SET fingerprint = excluded.fingerprint, generated_at = excluded.generated_at, json = excluded.json`,
+      [this.project, kind, fingerprint, new Date().toISOString(), json],
+    );
+  }
+
+  async readSnapshot(kind: string): Promise<Snapshot | null> {
+    const rows = await this.db.all<{ fingerprint: string; generated_at: string; json: string }>(
+      `SELECT fingerprint, generated_at, json FROM ${SNAPSHOT_TABLE} WHERE project = ? AND kind = ?`,
+      [this.project, kind],
+    );
+    const row = rows[0];
+    return row ? { fingerprint: row.fingerprint, generatedAt: row.generated_at, json: row.json } : null;
+  }
+
   async clear(): Promise<void> {
     await this.write(async (tx) => {
-      for (const table of [...TABLES, ...RELATION_TABLES, META_TABLE]) await tx.run(`DELETE FROM ${table} WHERE project = ?`, [this.project]);
+      for (const table of [...TABLES, ...RELATION_TABLES, SNAPSHOT_TABLE, META_TABLE]) {
+        await tx.run(`DELETE FROM ${table} WHERE project = ?`, [this.project]);
+      }
     });
   }
 

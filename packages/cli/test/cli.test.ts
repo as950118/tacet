@@ -95,6 +95,33 @@ describe.skipIf(!hasJar)("with the backend contract", () => {
     await expect(ws.relations({ page: "/nope" })).rejects.toThrow('No Page "/nope"');
   });
 
+  it("serves the page map and API usage from snapshots stored at index time, and only while they match", async () => {
+    const { analyzeUsage, buildOntology, openIndexDatabase } = await import("@tacet-api/core");
+    const model = await ws.model();
+    const fresh = {
+      pages: buildOntology(model, { includeFiles: false }).pages,
+      usage: analyzeUsage([{ name: "frontend", model }]),
+    };
+    const db = await openIndexDatabase(join(dir, "contract.db"));
+    try {
+      const store = db.project();
+      const stored = await store.readSnapshot("usage");
+      expect(JSON.parse(stored!.json)).toEqual(JSON.parse(JSON.stringify(fresh.usage)));
+      expect(await ws.pageApis()).toEqual(JSON.parse(JSON.stringify(fresh.pages)));
+      expect(await ws.usage()).toEqual(JSON.parse(JSON.stringify(fresh.usage)));
+
+      // A snapshot from another index state is ignored, not served.
+      await store.writeSnapshot("usage", "stale", JSON.stringify({ ...fresh.usage, endpoints: [] }));
+      const other = new TacetWorkspace(join(dir, "contract.db"));
+      expect((await other.usage()).endpoints.length).toBe(fresh.usage.endpoints.length);
+      expect(await other.refreshSnapshots()).toEqual(["pages", "usage"]);
+      expect((await store.readSnapshot("usage"))!.fingerprint).not.toBe("stale");
+      await other.close();
+    } finally {
+      await db.close();
+    }
+  });
+
   it("rebuilds the stored relations when the common-API rule in the config changes", async () => {
     const config = join(dir, "common.config.json");
     const base = JSON.parse(readFileSync(join(fixtures, "tacet.config.json"), "utf8"));

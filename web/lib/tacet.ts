@@ -18,16 +18,25 @@ export class TacetApiError extends Error {
 
 export async function tacetFetch(path: string): Promise<Response> {
   const { url, token } = apiConfig();
-  return fetch(`${url}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    cache: "no-store",
-  });
+  try {
+    return await fetch(`${url}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      cache: "no-store",
+      // A sleeping free-tier host (e.g. Render) takes about a minute to wake up.
+      signal: AbortSignal.timeout(100_000),
+    });
+  } catch (err) {
+    throw new TacetApiError(502, `${url} 에 연결할 수 없습니다 (${(err as Error).message})`);
+  }
 }
 
 export async function tacet<T>(path: string): Promise<T> {
   const res = await tacetFetch(path);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new TacetApiError(res.status, (body as { error?: string }).error ?? `${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const reason = (body as { error?: string }).error ?? `${res.status} ${res.statusText}`;
+    throw new TacetApiError(res.status, `${apiConfig().url}${path}: ${reason}`);
+  }
   return body as T;
 }
 

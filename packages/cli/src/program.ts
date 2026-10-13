@@ -310,6 +310,16 @@ export function buildProgram(): Command {
     });
 
   program
+    .command("snapshot")
+    .description("Precompute every page's APIs and every endpoint's usage for fast reads (index and extract-backend do it too)")
+    .action(async () => {
+      const ws = workspace();
+      const started = Date.now();
+      const kinds = await ws.refreshSnapshots();
+      emit(`Stored ${kinds.join(", ")} for project ${ws.project} in ${ws.indexPath} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
+    });
+
+  program
     .command("serve")
     .description("Serve the index as an HTTP API (REST, OpenAPI at /openapi.json): every project in the index database")
     .option("--port <n>", "port", (v) => Number.parseInt(v, 10), Number.parseInt(process.env.PORT ?? "4318", 10))
