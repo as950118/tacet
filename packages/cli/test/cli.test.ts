@@ -122,6 +122,23 @@ describe.skipIf(!hasJar)("with the backend contract", () => {
     }
   });
 
+  it("merges the usage snapshots of projects on one backend into what analyzing them together gives", async () => {
+    const { analyzeUsage } = await import("@tacet-api/core");
+    const db = join(dir, "pair.db");
+    const admin = new TacetWorkspace(db, undefined, { project: "admin" });
+    const shop = admin.forProject("shop");
+    for (const ws of [admin, shop]) {
+      await ws.indexFrontend(join(fixtures, "frontend"), { configPath: join(fixtures, "tacet.config.json") });
+      await ws.extractBackend(join(fixtures, "backend"));
+    }
+    const computed = analyzeUsage([
+      { name: "admin", model: await admin.model() },
+      { name: "shop", model: await shop.model() },
+    ]);
+    expect(await admin.usage([], ["shop"])).toEqual(JSON.parse(JSON.stringify(computed)));
+    await admin.close();
+  });
+
   it("rebuilds the stored relations when the common-API rule in the config changes", async () => {
     const config = join(dir, "common.config.json");
     const base = JSON.parse(readFileSync(join(fixtures, "tacet.config.json"), "utf8"));

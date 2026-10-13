@@ -283,7 +283,7 @@ export function createTacetTools(options: TacetToolOptions = {}): TacetTool[] {
           const out = resolve(a.outPath ?? ".tacet/ontology.html");
           mkdirSync(dirname(out), { recursive: true });
           const usage = (await ws.hasBackendBaseline()) ? await ws.usage() : undefined;
-          writeFileSync(out, renderOntologyHtml(ontology, { title: `Tacet ontology${a.focus ? `: ${a.focus}` : ""}`, usage }));
+          writeFileSync(out, renderOntologyHtml(ontology, { title: `Tacet ontology${a.focus ? `: ${a.focus}` : ""}`, usage, focus: a.focus }));
           return { path: out, stats: ontology.stats };
         }
         return ontology;

@@ -146,6 +146,15 @@ describe.each(backends)("Tacet HTTP API on $name", ({ location }) => {
     expect(passing.body.result).toBe("PASS");
     const unused = await get("/projects/admin/unused");
     expect(unused.body.endpoints.map((e: { endpoint: string }) => e.endpoint)).toContain("GET /users/summary");
+
+    // Another frontend on the same backend counts by default; `alone` leaves it out.
+    expect((await call("POST", "/projects/admin-copy/frontend", { dir: join(fixtures, "frontend") })).status).toBe(200);
+    expect((await call("POST", "/projects/admin-copy/backend", { dir: join(fixtures, "backend") })).status).toBe(200);
+    const together = await get("/projects/admin/unused");
+    expect(together.body.frontends.map((f: { name: string }) => f.name)).toEqual(["admin", "admin-copy"]);
+    const alone = await get("/projects/admin/unused?alone");
+    expect(alone.body.frontends.map((f: { name: string }) => f.name)).toEqual(["frontend"]);
+    await call("DELETE", "/projects/admin-copy");
   });
 });
 

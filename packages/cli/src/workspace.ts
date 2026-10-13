@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import {
   analyzeChangeImpact,
   analyzeUsage,
+  mergeUsageReports,
   buildOntology,
   checkContract,
   focusOntology,
@@ -217,6 +218,7 @@ export class TacetWorkspace {
   private frontendProject: TypeScriptProject | null = null;
   /** Parsed snapshots, kept while the index they were computed from is unchanged. */
   private readonly snapshots = new Map<SnapshotKind, { fingerprint: string; value: unknown }>();
+  private readonly siblings = new Map<string, TacetWorkspace>();
 
   /**
    * @param index a SQLite file path or a `postgres://` URL (tables go to the `tacet` schema, or `?schema=name`)
@@ -547,8 +549,8 @@ export class TacetWorkspace {
    * backend services through Feign / @HttpExchange clients.
    */
   async usage(otherIndexes: string[] = [], otherProjects: string[] = []): Promise<UsageReport> {
-    if (!otherIndexes.length && !otherProjects.length) {
-      const stored = await this.snapshot<UsageReport>("usage");
+    if (!otherIndexes.length) {
+      const stored = await this.storedUsage(otherProjects);
       if (stored) return stored;
     }
     const others = [
@@ -571,12 +573,35 @@ export class TacetWorkspace {
     }
   }
 
-  /** A workspace for another project in the same database (sharing its connection). */
+  /** The usage of this project and `otherProjects` from their snapshots, when every one of them has a current one. */
+  private async storedUsage(otherProjects: string[]): Promise<UsageReport | undefined> {
+    const workspaces = [this, ...otherProjects.map((project) => this.forProject(project))];
+    const reports = await Promise.all(workspaces.map((ws) => ws.snapshot<UsageReport>("usage")));
+    if (reports.some((r) => !r)) return undefined;
+    if (reports.length === 1) return reports[0];
+    // Named as analyzeUsage names them: by frontend directory, or by project when those collide.
+    const dirs = reports.map((r) => basename(r!.frontends[0]?.rootDir ?? ""));
+    const names =
+      new Set(dirs).size === reports.length
+        ? dirs
+        : workspaces.map((ws) => (ws.project !== DEFAULT_PROJECT ? ws.project : basename(ws.indexPath).replace(/\.[^.]+$/, "")));
+    try {
+      return mergeUsageReports(reports.map((report, i) => ({ name: names[i], report: report! })));
+    } catch {
+      return undefined; // Different backends: analyze the models together instead.
+    }
+  }
+
+  /** A workspace for another project in the same database (sharing its connection and its cached snapshots). */
   forProject(project: string): TacetWorkspace {
     if (project === this.project) return this;
-    const ws = new TacetWorkspace(this.location, this.configPath, { project });
-    ws.database = this.open();
-    ws.ownsDatabase = false;
+    let ws = this.siblings.get(project);
+    if (!ws) {
+      ws = new TacetWorkspace(this.location, this.configPath, { project });
+      ws.database = this.open();
+      ws.ownsDatabase = false;
+      this.siblings.set(project, ws);
+    }
     return ws;
   }
 
