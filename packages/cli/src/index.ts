@@ -5,6 +5,9 @@ export type {
   CheckOptions,
   DiffBackendOptions,
   GitChangeReport,
+  IndexStatus,
+  PageApisQuery,
+  WorkspaceOptions,
   ExtractBackendOptions,
   ExtractBackendResult,
   IndexFrontendOptions,
@@ -22,3 +25,5 @@ export * from "./format.js";
 export { runCi } from "./ci.js";
 export { relaunchWithLargerHeap } from "./heap.js";
 export type { CiOptions, CiResult, CheckFailOn, ImpactFailOn, VerifyFailOn } from "./ci.js";
+export { createTacetApiServer, isLoopback, HttpError } from "./server.js";
+export type { TacetApiServer, TacetApiServerOptions } from "./server.js";

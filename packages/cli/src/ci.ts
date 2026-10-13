@@ -55,7 +55,7 @@ export async function runCi(workspace: TacetWorkspace, options: CiOptions): Prom
     changes = options.aiProvider
       ? await workspace.verifyChanges(options.backendDir, { provider: options.aiProvider, base: options.base, jarPath: options.jarPath })
       : await workspace.diffBackend(options.backendDir, { base: options.base, jarPath: options.jarPath });
-  } else if (workspace.hasBackendBaseline()) {
+  } else if (await workspace.hasBackendBaseline()) {
     changes = options.aiProvider
       ? await workspace.verifyChanges(options.backendDir, { provider: options.aiProvider, jarPath: options.jarPath })
       : await workspace.analyzeBackend(options.backendDir, { jarPath: options.jarPath });
@@ -69,7 +69,7 @@ export async function runCi(workspace: TacetWorkspace, options: CiOptions): Prom
   }
 
   await workspace.extractBackend(options.backendDir, { jarPath: options.jarPath });
-  const contract = workspace.check(options.base ? { changedSince: options.base } : {});
+  const contract = await workspace.check(options.base ? { changedSince: options.base } : {});
   const contractFail = failsContract(contract, options.checkFailOn ?? "error");
 
   const title = options.base ? `Tacet: backend API changes ${options.base}...working tree` : "Tacet: backend API change report";

@@ -4,6 +4,7 @@ import { Command, Option } from "commander";
 import {
   attachGraph,
   mergeGraphs,
+  openIndexDatabase,
   renderHtml,
   renderMermaid,
   renderOntologyHtml,
@@ -35,6 +36,7 @@ import {
 import type { Effort } from "@tacet-api/ai-anthropic";
 import { AI_PROVIDERS, createAiProvider } from "./ai.js";
 import { runCi, type CheckFailOn, type VerifyFailOn } from "./ci.js";
+import { createTacetApiServer, isLoopback } from "./server.js";
 import { TacetWorkspace, DEFAULT_INDEX_PATH, type RelationsResult } from "./workspace.js";
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -56,13 +58,26 @@ export function buildProgram(): Command {
     .name("tacet")
     .description("Find the frontend code affected by backend API changes, and check frontend code against the real API")
     .version(VERSION)
-    .option("-i, --index <path>", "index database", DEFAULT_INDEX_PATH)
+    .option(
+      "-i, --index <location>",
+      "index database: a SQLite file, or postgres://user:pass@host/db[?schema=tacet] ($TACET_INDEX)",
+      process.env.TACET_INDEX ?? DEFAULT_INDEX_PATH,
+    )
+    .option("-p, --project <name>", "project in the index database: one database can hold many frontends ($TACET_PROJECT)", process.env.TACET_PROJECT)
     .option("-c, --config <path>", "tacet.config.json (defaults to <frontendDir>/tacet.config.json at index time)");
 
+  // One workspace per command run, closed afterwards so a PostgreSQL pool does not keep the process alive.
+  let current: TacetWorkspace | null = null;
   const workspace = () => {
-    const opts = program.opts<{ index: string; config?: string }>();
-    return new TacetWorkspace(opts.index, opts.config);
+    const opts = program.opts<{ index: string; project?: string; config?: string }>();
+    current ??= new TacetWorkspace(opts.index, opts.config, { project: opts.project });
+    return current;
   };
+  program.hook("postAction", async (_program, command) => {
+    if (command.name() === "serve") return;
+    await current?.close();
+    current = null;
+  });
 
   program
     .command("index")
@@ -81,7 +96,7 @@ export function buildProgram(): Command {
         changedSince: opts.changedSince,
         manifestPath: opts.manifest,
       });
-      const report = opts.check ? ws.check({ files: result.scope ?? undefined }) : null;
+      const report = opts.check ? await ws.check({ files: result.scope ?? undefined }) : null;
       if (opts.format === "json") {
         console.log(JSON.stringify(report ? { ...result, check: report } : result, null, 2));
       } else {
@@ -111,8 +126,8 @@ export function buildProgram(): Command {
     .addOption(formatOption(["text", "json", "markdown"], "text"))
     .addOption(failOnOption())
     .option("-o, --out <path>", "write the report to a file")
-    .action((opts: { files?: string[]; changedSince?: string; format: Format; failOn: FailOn; out?: string }) => {
-      const report = workspace().check({ files: opts.files, changedSince: opts.changedSince });
+    .action(async (opts: { files?: string[]; changedSince?: string; format: Format; failOn: FailOn; out?: string }) => {
+      const report = await workspace().check({ files: opts.files, changedSince: opts.changedSince });
       const output =
         opts.format === "json"
           ? JSON.stringify(report, null, 2)
@@ -138,9 +153,9 @@ export function buildProgram(): Command {
         .default("json"),
     )
     .option("-o, --out <path>", "write the output to a file")
-    .action((opts: { api?: string; file?: string; field?: string; search?: string; summary?: boolean; format: Format; graph: GraphAttachment; out?: string }) => {
+    .action(async (opts: { api?: string; file?: string; field?: string; search?: string; summary?: boolean; format: Format; graph: GraphAttachment; out?: string }) => {
       const ws = workspace();
-      const analyzer = ws.impact();
+      const analyzer = await ws.impact();
       let value: unknown;
       let text: string;
       let graph: ImpactGraph | null = null;
@@ -152,7 +167,7 @@ export function buildProgram(): Command {
         graph = mergeGraphs(impacts.map((i) => i.graph));
         title = `Impact of ${opts.api}`;
       } else if (opts.file) {
-        const impact = analyzer.impactOfFile(ws.toIndexPath(opts.file));
+        const impact = analyzer.impactOfFile(await ws.toIndexPath(opts.file));
         value = attachGraph(impact, opts.graph);
         text = formatFileImpact(impact);
         graph = impact.graph;
@@ -185,8 +200,8 @@ export function buildProgram(): Command {
     .description("Render the full API → field → function → component → file graph")
     .addOption(formatOption(["html", "mermaid", "json"], "html"))
     .option("-o, --out <path>", "output file (default .tacet/graph.html for html)")
-    .action((opts: { format: Format; out?: string }) => {
-      const analyzer = workspace().impact();
+    .action(async (opts: { format: Format; out?: string }) => {
+      const analyzer = await workspace().impact();
       const graph = analyzer.fullGraph();
       const out = opts.out ?? (opts.format === "html" ? ".tacet/graph.html" : undefined);
       emit(render(opts.format, { value: graph, text: "", graph, title: "Tacet impact graph" }), out);
@@ -202,9 +217,10 @@ export function buildProgram(): Command {
     .option("--also <indexes...>", "html: index databases of other frontends on the same backend, for the Unused APIs tab")
     .addOption(formatOption(["html", "text", "json", "mermaid", "turtle"], "html"))
     .option("-o, --out <path>", "output file (default .tacet/ontology.html for html)")
-    .action((opts: { focus?: string; depth: number; files: boolean; all?: boolean; also?: string[]; format: Format; out?: string }) => {
+    .option("--also-projects <names...>", "html: other projects in this index database, for the Unused APIs tab")
+    .action(async (opts: { focus?: string; depth: number; files: boolean; all?: boolean; also?: string[]; alsoProjects?: string[]; format: Format; out?: string }) => {
       const ws = workspace();
-      const ontology = ws.ontology({
+      const ontology = await ws.ontology({
         focus: opts.focus,
         depth: opts.depth,
         includeFiles: opts.files,
@@ -223,7 +239,7 @@ export function buildProgram(): Command {
                 : renderOntologyHtml(ontology, {
                     title,
                     subtitle: `${ontology.pages.length} pages · ${ontology.stats.entities.Endpoint ?? 0} APIs · ${ontology.stats.triples} triples`,
-                    usage: ws.hasBackendBaseline() ? ws.usage(opts.also) : undefined,
+                    usage: (await ws.hasBackendBaseline()) ? await ws.usage(opts.also, opts.alsoProjects) : undefined,
                   });
       emit(output, opts.out ?? (opts.format === "html" ? ".tacet/ontology.html" : undefined));
     });
@@ -238,11 +254,11 @@ export function buildProgram(): Command {
     .option("--object <entity>", "relations to this entity (id or exact label)")
     .option("--limit <n>", "at most this many relations", (v) => Number.parseInt(v, 10))
     .addOption(formatOption(["text", "json"], "text"))
-    .action((opts: { page?: string; api?: string; subject?: string; predicate?: string; object?: string; limit?: number; format: Format }) => {
+    .action(async (opts: { page?: string; api?: string; subject?: string; predicate?: string; object?: string; limit?: number; format: Format }) => {
       if (!opts.page && !opts.api && !opts.subject && !opts.predicate && !opts.object) {
         throw new Error("Pass --page, --api, or --subject / --predicate / --object");
       }
-      const result = workspace().relations(opts);
+      const result = await workspace().relations(opts);
       emit(opts.format === "json" ? JSON.stringify(result, null, 2) : formatRelations(result));
     });
 
@@ -253,11 +269,12 @@ export function buildProgram(): Command {
         "nor a backend service through a Feign / @HttpExchange client",
     )
     .option("--also <indexes...>", "index databases of other frontends using the same backend (e.g. an admin and a user app)")
+    .option("--also-projects <names...>", "other projects in this index database using the same backend")
     .option("--all", "with csv / json: every endpoint, not only the unused ones")
     .addOption(formatOption(["text", "markdown", "csv", "json"], "text"))
     .option("-o, --out <path>", "write the report to a file")
-    .action((opts: { also?: string[]; all?: boolean; format: Format; out?: string }) => {
-      const report = workspace().usage(opts.also);
+    .action(async (opts: { also?: string[]; alsoProjects?: string[]; all?: boolean; format: Format; out?: string }) => {
+      const report = await workspace().usage(opts.also, opts.alsoProjects);
       const json = () =>
         JSON.stringify(
           opts.all ? report : { ...report, endpoints: report.endpoints.filter((e) => e.usage === "unused" || e.usage === "client-declared") },
@@ -273,6 +290,51 @@ export function buildProgram(): Command {
               ? renderUsageMarkdown(report)
               : formatUsage(report);
       emit(output, opts.out);
+    });
+
+  program
+    .command("projects")
+    .description("List the projects in the index database")
+    .addOption(formatOption(["text", "json"], "text"))
+    .action(async (opts: { format: Format }) => {
+      const database = await openIndexDatabase(program.opts<{ index: string }>().index);
+      try {
+        const projects = await database.listProjects();
+        if (opts.format === "json") return emit(JSON.stringify(projects, null, 2));
+        if (!projects.length) return emit(`No projects in ${database.location}.`);
+        const when = (side: { generatedAt: string } | null) => side?.generatedAt.slice(0, 19).replace("T", " ") ?? "-";
+        emit(projects.map((p) => `${p.name}  frontend ${when(p.frontend)}  backend ${when(p.backend)}`).join("\n"));
+      } finally {
+        await database.close();
+      }
+    });
+
+  program
+    .command("serve")
+    .description("Serve the index as an HTTP API (REST, OpenAPI at /openapi.json): every project in the index database")
+    .option("--port <n>", "port", (v) => Number.parseInt(v, 10), Number.parseInt(process.env.PORT ?? "4318", 10))
+    .option("--host <host>", "interface to listen on", "127.0.0.1")
+    .option("--token <token>", "require `Authorization: Bearer <token>` ($TACET_API_TOKEN)", process.env.TACET_API_TOKEN)
+    .option("--allow-dir <dirs...>", "directories the indexing endpoints may read (default: the current directory)")
+    .option("--cors <origin>", "Access-Control-Allow-Origin for browser clients")
+    .action(async (opts: { port: number; host: string; token?: string; allowDir?: string[]; cors?: string }) => {
+      if (!isLoopback(opts.host) && !opts.token) {
+        throw new Error(`Listening on ${opts.host} exposes the index and indexing to the network: set --token or $TACET_API_TOKEN`);
+      }
+      const global = program.opts<{ index: string; config?: string }>();
+      const api = await createTacetApiServer({
+        index: global.index,
+        configPath: global.config,
+        token: opts.token,
+        allowDirs: opts.allowDir,
+        cors: opts.cors,
+      });
+      const url = await api.listen(opts.port, opts.host);
+      console.log(`Tacet API on ${url} (index ${api.database.location}${opts.token ? ", bearer token required" : ""})`);
+      console.log(`  ${url}/openapi.json   ${url}/projects   ${url}/projects/<name>/pages`);
+      const stop = () => void api.close().finally(() => process.exit(0));
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
     });
 
   const impactFailOn = () =>

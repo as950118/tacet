@@ -47,6 +47,9 @@ class Tacet:
     """
 
     index: str | os.PathLike[str] = ".tacet/index.db"
+    """A SQLite file, or a PostgreSQL URL (postgres://user:pass@host/db?schema=tacet) shared by many projects."""
+    project: str | None = None
+    """Project inside the index database (the CLI default is "default")."""
     frontend_dir: str | os.PathLike[str] | None = None
     backend_dir: str | os.PathLike[str] | None = None
     config: str | os.PathLike[str] | None = None
@@ -239,6 +242,10 @@ class Tacet:
         """APIs and files ranked by impact, plus backend endpoints no frontend code calls."""
         return self._run(["impact", "--summary", "--format", "json"])
 
+    def projects(self) -> list[dict[str, Any]]:
+        """Projects in the index database, with when their frontend and backend were last indexed."""
+        return self._run(["projects", "--format", "json"])
+
     def render_graph(
         self,
         format: Literal["mermaid", "html"] = "mermaid",
@@ -266,7 +273,11 @@ class Tacet:
 
     def _base(self) -> list[str]:
         command = list(self.command) if self.command else _default_command()
-        base = [*command, "--index", os.fspath(self.index)]
+        base = list(command)
+        if not self._index_is_url():
+            base += ["--index", os.fspath(self.index)]
+        if self.project:
+            base += ["--project", self.project]
         if self.config:
             base += ["--config", os.fspath(self.config)]
         return base
@@ -279,7 +290,7 @@ class Tacet:
                 text=True,
                 cwd=self.cwd,
                 timeout=self.timeout,
-                env={**os.environ, **self.env},
+                env=self._env(),
                 check=False,
             )
         except FileNotFoundError as err:
@@ -288,6 +299,16 @@ class Tacet:
             message = (result.stderr or result.stdout).strip() or f"exit code {result.returncode}"
             raise TacetError(message)
         return result
+
+    def _index_is_url(self) -> bool:
+        return isinstance(self.index, str) and self.index.lower().startswith(("postgres://", "postgresql://"))
+
+    def _env(self) -> dict[str, str]:
+        env = {**os.environ, **self.env}
+        # A database URL may hold a password: pass it in the environment, not on the command line.
+        if self._index_is_url():
+            env["TACET_INDEX"] = os.fspath(self.index)
+        return env
 
     def _run(self, args: Sequence[str]) -> Any:
         output = self._exec(args).stdout
