@@ -238,6 +238,7 @@ export function buildProgram(): Command {
                 ? formatOntology(ontology, opts.focus)
                 : renderOntologyHtml(ontology, {
                     title,
+                    focus: opts.focus,
                     subtitle: `${ontology.pages.length} pages · ${ontology.stats.entities.Endpoint ?? 0} APIs · ${ontology.stats.triples} triples`,
                     usage: (await ws.hasBackendBaseline()) ? await ws.usage(opts.also, opts.alsoProjects) : undefined,
                   });

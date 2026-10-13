@@ -716,9 +716,9 @@ export function focusOntology(ontology: Ontology, query: string, depth = 2): Ont
   }
   const entities = ontology.entities.filter((e) => keep.has(e.id));
   const triples = ontology.triples.filter((t) => keep.has(t.subject) && keep.has(t.object));
-  const pages = ontology.pages
-    .filter((p) => keep.has(p.page) || p.apis.some((a) => keep.has(a.endpoint)))
-    .map((p) => (keep.has(p.page) ? p : { ...p, apis: p.apis.filter((a) => keep.has(a.endpoint)) }));
+  // Only pages in the neighborhood: a page that merely shares an API (e.g. a menu every page loads) has no entity
+  // here to draw, so listing it would offer a graph that cannot be shown.
+  const pages = ontology.pages.filter((p) => keep.has(p.page));
   const stats: Ontology["stats"] = { entities: {}, triples: triples.length, inferred: triples.filter((t) => t.inferred).length };
   for (const e of entities) stats.entities[e.class] = (stats.entities[e.class] ?? 0) + 1;
   return { schema: ontology.schema, entities, triples, pages, stats, commonApis: ontology.commonApis, rootDir: ontology.rootDir };

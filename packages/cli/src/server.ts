@@ -283,7 +283,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
         if (format === "turtle") return { raw: renderOntologyTurtle(ontology), contentType: "text/turtle; charset=utf-8" };
         if (format === "html") {
           const usage = (await ws.hasBackendBaseline()) ? await ws.usage() : undefined;
-          return html(renderOntologyHtml(ontology, { title: `Tacet ontology: ${ws.project}${focus ? ` / ${focus}` : ""}`, usage }));
+          return html(renderOntologyHtml(ontology, { title: `Tacet ontology: ${ws.project}${focus ? ` / ${focus}` : ""}`, usage, focus }));
         }
         return ontology;
       },

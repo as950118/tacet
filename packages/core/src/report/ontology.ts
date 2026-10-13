@@ -1,4 +1,4 @@
-import type { Ontology, OntologyClass, OntologyEntity } from "../analysis/ontology.js";
+import { findEntities, type Ontology, type OntologyClass, type OntologyEntity } from "../analysis/ontology.js";
 import type { UsageReport } from "../analysis/usage.js";
 
 export interface OntologyRenderOptions {
@@ -148,6 +148,8 @@ export interface OntologyHtmlOptions {
   subtitle?: string;
   /** Who calls each endpoint (`analyzeUsage`): adds the Unused APIs tab. */
   usage?: UsageReport;
+  /** The query the ontology was focused on: the explorer opens with its graph drawn, not on the overview. */
+  focus?: string;
 }
 
 /**
@@ -156,7 +158,8 @@ export interface OntologyHtmlOptions {
  */
 export function renderOntologyHtml(ontology: Ontology, options: OntologyHtmlOptions): string {
   const usage = options.usage ? compactUsage(options.usage) : null;
-  const payload = JSON.stringify({ ontology, usage, title: options.title, subtitle: options.subtitle ?? "", styles: CLASS_STYLE })
+  const focus = options.focus ? findEntities(ontology, options.focus).map((e) => e.id) : [];
+  const payload = JSON.stringify({ ontology, usage, focus, title: options.title, subtitle: options.subtitle ?? "", styles: CLASS_STYLE })
     .replace(/</g, "\\u003c")
     .replace(/[\u2028\u2029]/g, (c) => (c === "\u2028" ? "\\u2028" : "\\u2029"));
   return `<!doctype html>
@@ -579,7 +582,7 @@ h2.section { font-size: 14px; margin: 20px 24px 8px; }
 const SCRIPT = `
 (function () {
   var data = JSON.parse(document.getElementById("ontology-data").textContent);
-  var O = data.ontology, STY = data.styles;
+  var O = data.ontology, STY = data.styles, FOCUS = data.focus || [];
   var entities = O.entities, triples = O.triples;
   var byId = new Map(entities.map(function (e) { return [e.id, e]; }));
   var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -1107,6 +1110,16 @@ const SCRIPT = `
     var info = viewIds.size ? "Showing " + viewIds.size + " of " + total : "";
     if (viewIds.size > LARGE_VIEW && focusId) info += " · large neighborhood, lower the depth to simplify";
     box.appendChild(el("span", "count", info));
+    // The focus query matched several entities (e.g. the same component name in two apps): offer the others.
+    var others = FOCUS.filter(function (id) { return id !== focusId && byId.has(id); });
+    if (FOCUS.length > 1 && others.length) {
+      box.appendChild(el("span", "count", "Also matches:"));
+      others.slice(0, 8).forEach(function (id) {
+        var e = byId.get(id), b = el("button", null, e.label); b.title = e.class + ": " + (e.file || e.label);
+        b.onclick = function () { history = []; focus(id); };
+        box.appendChild(b);
+      });
+    }
   }
 
   function renderEmpty() {
@@ -1201,7 +1214,9 @@ const SCRIPT = `
 
   function scrollToNode(id) {
     var p = xy.get(shown(id)), c = document.getElementById("canvas"); if (!p) return;
-    c.scrollTo({ left: Math.max(0, p.x * scale - 80), top: Math.max(0, p.y * scale - c.clientHeight / 2), behavior: "smooth" });
+    // Keep what leads to the node (e.g. the page showing a component) in view: stay at the left edge when it fits.
+    var x = p.x * scale, left = x + 320 < c.clientWidth ? 0 : Math.max(0, x - 300);
+    c.scrollTo({ left: left, top: Math.max(0, p.y * scale - c.clientHeight / 2), behavior: "smooth" });
   }
   function reach(start, adj) {
     var seen = new Set([start]), q = [start];
@@ -1882,5 +1897,7 @@ const SCRIPT = `
   renderUsage();
   renderTriples();
   renderSchema();
+  var first = FOCUS.filter(function (id) { return byId.has(id); })[0];
+  if (first) focus(first);
 })();
 `;
