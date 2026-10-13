@@ -71,7 +71,7 @@ async function ApisTab({ project, hasBackend }: { project: string; hasBackend: b
   if (!hasBackend) {
     return <div className="panel">backend가 인덱싱되지 않았습니다. 로컬에서 <code>tacet extract-backend</code>를 실행해 주세요.</div>;
   }
-  const { totals: t, unresolvedCalls, rows } = await getUsage(project);
+  const { totals: t, unresolvedCalls, frontends, rows } = await getUsage(project);
   return (
     <>
       <div className="stats">
@@ -81,6 +81,12 @@ async function ApisTab({ project, hasBackend }: { project: string; hasBackend: b
         <div className="stat"><span className="muted">client 선언만</span><b>{t.clientDeclared}</b></div>
         <div className="stat"><span className="muted">미사용</span><b>{t.unused}</b></div>
       </div>
+      {frontends.length > 1 && (
+        <p className="muted">
+          같은 backend를 쓰는 프론트엔드 {frontends.join(", ")}를 함께 계산했습니다. &quot;미사용&quot;은 이 중 어디에서도 호출하지 않는
+          API입니다.
+        </p>
+      )}
       {unresolvedCalls > 0 && (
         <p className="muted">
           URL을 정적으로 알 수 없는 호출이 {unresolvedCalls}건 있어, 일부 &quot;미사용&quot;은 실제로 쓰일 수 있습니다.

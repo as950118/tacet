@@ -427,7 +427,7 @@ curl -H "Authorization: Bearer $TACET_API_TOKEN" localhost:4318/projects/admin/p
 | GET | `/projects/{p}/ontology` | `?focus=&depth=&format=json\|mermaid\|turtle\|html` |
 | GET | `/projects/{p}/check` | 계약 검사 (`?files=a,b`, `?changedSince=`) |
 | GET | `/projects/{p}/impact` | `?api=` / `?file=` / `?field=` (없으면 전체 순위), `&graph=` |
-| GET | `/projects/{p}/search`, `/graph`, `/unused` | 검색 `?q=` / 영향 그래프 / 미사용 API (`?also=다른프로젝트`) |
+| GET | `/projects/{p}/search`, `/graph`, `/unused` | 검색 `?q=` / 영향 그래프 / 미사용 API. 같은 backend로 인덱싱한 다른 프로젝트(예: admin·user 앱)의 프론트엔드도 기본으로 함께 계산한다. 직접 지정은 `?also=`, 이 프로젝트만 계산은 `?alone` |
 
 - 인덱싱 엔드포인트는 서버의 경로를 읽으므로 `--allow-dir`(기본: 현재 디렉터리) 안의 경로만 받는다. 같은 프로젝트의 쓰기는 순서대로 처리된다.
 - `--read-only`(또는 `TACET_READ_ONLY=true`)면 조회 라우트만 연다. 인덱싱·삭제는 403으로 거부한다. 데이터를 다른 곳(로컬 CLI, CI)에서 넣는 공개 서버용이다.

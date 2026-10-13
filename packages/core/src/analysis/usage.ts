@@ -186,3 +186,54 @@ export function analyzeUsage(inputs: UsageInput[]): UsageReport {
     externalServiceCalls,
   };
 }
+
+/**
+ * The usage report of several frontends against one backend, from each frontend's own report (e.g. stored
+ * snapshots): the same result {@link analyzeUsage} gives for all of them together, without their models.
+ * `name` replaces each report's frontend name. Throws when the reports are not about the same endpoints.
+ */
+export function mergeUsageReports(parts: Array<{ name: string; report: UsageReport }>): UsageReport {
+  const [first, ...rest] = parts;
+  if (!first) throw new Error("No usage reports to merge");
+  const ids = first.report.endpoints.map((e) => e.endpoint).join("\n");
+  for (const { report } of rest) {
+    if (report.endpoints.map((e) => e.endpoint).join("\n") !== ids) {
+      throw new Error("Usage reports of different backends cannot be merged");
+    }
+  }
+  const rank: Record<EndpointUsageKind, number> = { frontend: 3, service: 2, "client-declared": 1, unused: 0 };
+  const merged = first.report.endpoints.map((endpoint, i) => {
+    const each = parts.map(({ name, report }) => ({ name, e: report.endpoints[i] }));
+    const usage = each.map((x) => x.e.usage).reduce((a, b) => (rank[b] > rank[a] ? b : a));
+    return {
+      ...endpoint,
+      usage,
+      frontends: each.flatMap(({ name, e }) => e.frontends.map((f) => ({ ...f, frontend: name }))),
+    };
+  });
+  // Recomputed, not merged: another method on the same path may be used by a different frontend.
+  const pathsUsed = new Map<string, Set<string>>();
+  for (const e of merged) {
+    if (e.usage !== "frontend" && e.usage !== "service") continue;
+    const path = normalizePath(e.path);
+    (pathsUsed.get(path) ?? pathsUsed.set(path, new Set()).get(path)!).add(e.method);
+  }
+  const endpoints: EndpointUsage[] = merged.map((e) => ({
+    ...e,
+    otherMethodsUsed: [...(pathsUsed.get(normalizePath(e.path)) ?? [])].filter((m) => m !== e.method).sort(),
+  }));
+  const count = (kind: EndpointUsageKind): number => endpoints.filter((e) => e.usage === kind).length;
+  return {
+    ...first.report,
+    frontends: parts.flatMap(({ name, report }) => report.frontends.map((f) => ({ ...f, name }))),
+    totals: {
+      endpoints: endpoints.length,
+      frontend: count("frontend"),
+      service: count("service"),
+      clientDeclared: count("client-declared"),
+      unused: count("unused"),
+      unusedNotRouted: endpoints.filter((e) => e.usage === "unused" && e.routes !== null && e.routes.length === 0).length,
+    },
+    endpoints,
+  };
+}

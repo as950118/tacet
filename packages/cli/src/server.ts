@@ -125,6 +125,21 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     return run;
   };
 
+  /**
+   * The projects whose usage counts together with this one's: `also` when given, otherwise (unless `alone`) every
+   * other project indexed against the same backend directory, e.g. the admin and user apps of one monorepo.
+   * An endpoint is unused only if none of the frontends calling that backend uses it.
+   */
+  const usagePeers = async (ws: TacetWorkspace, query: Query): Promise<string[]> => {
+    const also = query.list("also");
+    if (also) return also;
+    if (query.boolean("alone")) return [];
+    const projects = await database.listProjects();
+    const backend = projects.find((p) => p.name === ws.project)?.backend?.rootDir;
+    if (!backend) return [];
+    return projects.filter((p) => p.name !== ws.project && p.frontend && p.backend?.rootDir === backend).map((p) => p.name);
+  };
+
   /** A path inside the allowed directories (symlinks resolved), or a 400 / 403. */
   const allowedDir = (value: unknown, name: string): string => {
     if (typeof value !== "string" || !value) throw new HttpError(400, `\`${name}\` is required`);
@@ -268,6 +283,8 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
         files: { type: "boolean", description: "Include File entities and definedIn triples (default false)" },
         all: { type: "boolean", description: "Keep frontend functions that lead to no API" },
         format: { type: "string", enum: ["json", "mermaid", "turtle", "html"], description: "Default json" },
+        also: { type: "string[]", description: "html: projects whose frontends count in the Unused APIs tab (default: same backend)" },
+        alone: { type: "boolean", description: "html: count only this project's frontend in the Unused APIs tab" },
       },
       handle: async ({ ws, query }) => {
         const format = query.string("format") ?? "json";
@@ -282,7 +299,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
         if (format === "mermaid") return text(renderOntologyMermaid(ontology));
         if (format === "turtle") return { raw: renderOntologyTurtle(ontology), contentType: "text/turtle; charset=utf-8" };
         if (format === "html") {
-          const usage = (await ws.hasBackendBaseline()) ? await ws.usage() : undefined;
+          const usage = (await ws.hasBackendBaseline()) ? await ws.usage([], await usagePeers(ws, query)) : undefined;
           return html(renderOntologyHtml(ontology, { title: `Tacet ontology: ${ws.project}${focus ? ` / ${focus}` : ""}`, usage, focus }));
         }
         return ontology;
@@ -363,13 +380,15 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       method: "GET",
       path: "/unused",
       tag: "analysis",
-      summary: "Backend endpoints nothing calls (this frontend, the `also` projects, or a backend service client)",
+      summary:
+        "Backend endpoints nothing calls: no frontend of this project or of the other projects on the same backend, no service client",
       query: {
-        also: { type: "string[]", description: "Other projects in this database using the same backend" },
+        also: { type: "string[]", description: "Projects whose frontends count too (default: every project indexed against the same backend)" },
+        alone: { type: "boolean", description: "Count only this project's frontend" },
         all: { type: "boolean", description: "Every endpoint with its usage, not only the unused ones" },
       },
       handle: async ({ ws, query }) => {
-        const report = await ws.usage([], query.list("also"));
+        const report = await ws.usage([], await usagePeers(ws, query));
         return query.boolean("all")
           ? report
           : { ...report, endpoints: report.endpoints.filter((e) => e.usage === "unused" || e.usage === "client-declared") };

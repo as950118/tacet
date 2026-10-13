@@ -26,6 +26,8 @@ export const getStatus = (project: string) =>
 export interface UsageView {
   totals: UsageReport["totals"];
   unresolvedCalls: number;
+  /** The frontends counted: this project's and those of the other projects on the same backend. */
+  frontends: string[];
   rows: EndpointRow[];
 }
 
@@ -36,6 +38,7 @@ export const getUsage = (project: string) =>
       return {
         totals: report.totals,
         unresolvedCalls: report.frontends.reduce((n, f) => n + f.unresolvedCalls, 0),
+        frontends: report.frontends.map((f) => f.name),
         rows: report.endpoints.map((e) => ({
           usage: e.usage,
           method: e.method,
