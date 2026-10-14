@@ -166,9 +166,12 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     // Every new user gets a personal workspace in the sign-up transaction (PRD-0001 AC-2).
     accounts = new PlatformAccounts(platformDb, undefined, { onSignUp: (user, tx) => ws.createPersonal(user, tx) });
   }
-  // Expired sessions nobody presents again are deleted at start and then hourly (REVIEW-0001 R2).
-  const purgeSessions = () =>
+  // Expired sessions nobody presents again (REVIEW-0001 R2) and expired invites nobody accepted (REVIEW-0002 OQ-4) are
+  // deleted at start and then hourly.
+  const purgeSessions = () => {
     void accounts?.purgeExpiredSessions().catch((err: unknown) => console.error("Purging expired sessions failed:", err));
+    void platformWorkspaces?.purgeExpiredInvites().catch((err: unknown) => console.error("Purging expired invites failed:", err));
+  };
   purgeSessions();
   const purgeTimer = accounts ? setInterval(purgeSessions, 60 * 60 * 1000).unref() : undefined;
   const loginFailures = new FailureThrottle();
@@ -465,7 +468,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     },
   ];
 
-  if (accounts) routes.push(...accountRoutes(accounts, loginFailures));
+  if (accounts) routes.push(...accountRoutes(accounts, loginFailures, platformWorkspaces));
   if (platformWorkspaces) routes.push(...workspaceRoutes(platformWorkspaces));
 
   const openapi = openApiDocument(options.readOnly ? routes.filter((r) => !r.write) : routes, Boolean(options.token));
@@ -523,6 +526,16 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       const query = new Query(url.searchParams);
       validate(match.route, query, body);
       const { params } = match;
+      if (params.ws !== undefined && platformWorkspaces && principal.kind === "user") {
+        // An earlier slug (an alias) redirects to the same path under the current one, for members only: anyone else
+        // gets the 404 of `get`, so an alias says no more than a slug (REVIEW-0002 OQ-5).
+        const current = (await platformWorkspaces.get(principal.user.id, params.ws)).slug;
+        if (current !== params.ws) {
+          const segments = path.split("/");
+          segments[templateOf(match.route).split("/").indexOf("{ws}")] = encodeURIComponent(current);
+          throw new HttpError(308, `The workspace "${params.ws}" is now "${current}"`, { Location: `${segments.join("/")}${url.search}` });
+        }
+      }
       const ws = params.project === undefined ? (undefined as unknown as TacetWorkspace) : workspace(params.project);
       const run = () => match.route.handle({ ws, query, body, params, principal, client: clientOf(req) });
       const result = match.route.write && params.project !== undefined ? await serialized(params.project, run) : await run();
@@ -604,8 +617,9 @@ function templateOf(route: Route): string {
 /**
  * The route for a request and its path parameters. Paths are compared segment by segment; where several templates fit
  * (`/a/{x}` and `/a/b`), the one with the earliest literal segment wins. A path that fits only other methods is a 405.
+ * Exported for tests only: the route table has no such overlap yet.
  */
-function matchRoute(routes: Route[], method: string, path: string): { route: Route; params: Record<string, string> } | null {
+export function matchRoute(routes: Route[], method: string, path: string): { route: Route; params: Record<string, string> } | null {
   const segments = path.split("/").slice(1);
   const fitting: Array<{ route: Route; template: string[] }> = [];
   for (const route of routes) {
@@ -696,6 +710,7 @@ function statusOf(err: unknown): number {
       "invalid-name": 400,
       "invalid-slug": 400,
       "invalid-role": 400,
+      "invalid-transfer": 400,
       "slug-taken": 409,
       "not-found": 404,
       forbidden: 403,
@@ -825,7 +840,7 @@ function openApiDocument(routes: Route[], secured: boolean): Record<string, unkn
 }
 
 /** Sign-up, login, logout and the current user (ADR-0002). */
-function accountRoutes(accounts: PlatformAccounts, failures: FailureThrottle): Route[] {
+function accountRoutes(accounts: PlatformAccounts, failures: FailureThrottle, workspaces?: PlatformWorkspaces): Route[] {
   const credentials: Record<string, Param> = {
     email: { type: "string", required: true, description: "Email address" },
     password: { type: "string", required: true, description: "Password" },
@@ -883,8 +898,11 @@ function accountRoutes(accounts: PlatformAccounts, failures: FailureThrottle): R
       global: true,
       access: "user",
       tag: "accounts",
-      summary: "The logged-in user",
-      handle: async ({ principal }) => (principal.kind === "user" ? { user: principal.user } : null),
+      summary: "The logged-in user, and how many workspaces they are a member of (0: offer to create one)",
+      handle: async ({ principal }) =>
+        principal.kind === "user"
+          ? { user: principal.user, ...(workspaces ? { workspaces: await workspaces.countMine(principal.user.id) } : {}) }
+          : null,
     },
   ];
 }

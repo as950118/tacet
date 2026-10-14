@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTacetApiServer, type TacetApiServer } from "../src/server.js";
+import { createTacetApiServer, HttpError, matchRoute, type TacetApiServer } from "../src/server.js";
 
 const TOKEN = "machine-token";
 const PASSWORD = "correct horse battery";
@@ -46,6 +46,7 @@ describe.each(backends)("workspaces over HTTP on $name", ({ location }) => {
     const call = async (method: string, path: string, body?: unknown, token?: string | null) => {
       const res = await fetch(`${base}${path}`, {
         method,
+        redirect: "manual",
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
@@ -53,14 +54,14 @@ describe.each(backends)("workspaces over HTTP on $name", ({ location }) => {
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
       const text = await res.text();
-      return { status: res.status, body: text ? JSON.parse(text) : null };
+      return { status: res.status, body: text ? JSON.parse(text) : null, location: res.headers.get("location") };
     };
     /** Signs up and returns the user and their session token. */
     const user = async (email: string) => {
       const { body } = await call("POST", "/auth/signup", { email, password: PASSWORD });
       return { id: body.user.id as string, email, token: body.token as string };
     };
-    return { call, user };
+    return { call, user, base };
   };
 
   it("lists the personal workspace made at sign-up and manages workspaces", async () => {
@@ -83,7 +84,7 @@ describe.each(backends)("workspaces over HTTP on $name", ({ location }) => {
       name: "Acme Inc",
     });
     expect((await call("GET", "/workspaces/acme-inc", undefined, dev.token)).status).toBe(200);
-    expect((await call("GET", "/workspaces/acme", undefined, dev.token)).status).toBe(404);
+    expect((await call("GET", "/workspaces/acme", undefined, dev.token)).status).toBe(308);
     expect((await call("GET", "/workspaces/NOT%20A%20SLUG", undefined, dev.token)).status).toBe(400);
     expect((await call("DELETE", "/workspaces/acme-inc", undefined, dev.token)).body).toEqual({ ok: true });
     expect((await call("GET", "/workspaces/acme-inc", undefined, dev.token)).status).toBe(404);
@@ -169,5 +170,137 @@ describe.each(backends)("workspaces over HTTP on $name", ({ location }) => {
     expect(member.patch.requestBody.content["application/json"].schema.properties.role.enum).toEqual(["owner", "admin", "member", "viewer"]);
     expect(body.paths["/invites/accept"].post).toBeDefined();
     expect(body.paths["/projects/{project}/pages"].get.parameters[0]).toMatchObject({ name: "project", in: "path" });
+  });
+
+  it("keeps workspaces, members and invites of other workspaces out of reach (REVIEW-0002 R5)", async () => {
+    const { call, user } = await start();
+    const a = await user("a@example.com");
+    const b = await user("b@example.com");
+    const bMember = await user("b-member@example.com");
+    await call("POST", "/workspaces", { name: "A", slug: "team-a" }, a.token);
+    await call("POST", "/workspaces", { name: "B", slug: "team-b" }, b.token);
+    const join = await call("POST", "/workspaces/team-b/invites", { email: bMember.email, role: "member" }, b.token);
+    await call("POST", "/invites/accept", { token: join.body.token }, bMember.token);
+    const bInvite = await call("POST", "/workspaces/team-b/invites", { email: "x@example.com", role: "viewer" }, b.token);
+
+    expect((await call("PATCH", `/workspaces/team-a/members/${bMember.id}`, { role: "viewer" }, a.token)).status).toBe(404);
+    expect((await call("DELETE", `/workspaces/team-a/members/${bMember.id}`, undefined, a.token)).status).toBe(404);
+    expect((await call("DELETE", `/workspaces/team-a/invites/${bInvite.body.id}`, undefined, a.token)).status).toBe(404);
+    expect((await call("POST", "/workspaces/team-a/transfer", { userId: b.id }, a.token)).status).toBe(404);
+    expect((await call("GET", "/workspaces/team-b/members", undefined, b.token)).body).toHaveLength(2);
+    expect((await call("GET", "/workspaces/team-b/invites", undefined, b.token)).body.map((i: { id: string }) => i.id)).toEqual([bInvite.body.id]);
+  });
+
+  it("answers 405 on global routes, and 400 for malformed or slash-encoded path segments (REVIEW-0002 R5)", async () => {
+    const { call, user } = await start();
+    const dev = await user("dev@example.com");
+    expect((await call("DELETE", "/me", undefined, dev.token)).status).toBe(405);
+    expect((await call("PUT", "/workspaces", {}, dev.token)).status).toBe(405);
+    expect((await call("GET", "/invites/accept", undefined, dev.token)).status).toBe(405);
+    expect((await call("POST", "/workspaces/dev/members", {}, dev.token)).status).toBe(405);
+
+    expect((await call("GET", "/workspaces/%zz", undefined, dev.token)).status).toBe(400);
+    expect((await call("PATCH", "/workspaces/dev/members/%E0%A4%A", { role: "viewer" }, dev.token)).status).toBe(400);
+    // An encoded slash stays inside its segment: this is GET /workspaces/{ws} with ws "dev/members", not the member list.
+    expect((await call("GET", "/workspaces/dev%2Fmembers", undefined, dev.token)).status).toBe(400);
+    expect((await call("GET", "/workspaces/d%2Fv/members", undefined, dev.token)).status).toBe(400);
+    expect((await call("GET", "/workspaces/d%65v/members", undefined, dev.token)).status).toBe(200);
+  });
+
+  it("prefers literal path segments over parameters, whatever the order of the routes (REVIEW-0002 R5)", () => {
+    type Routes = Parameters<typeof matchRoute>[0];
+    const route = (method: "GET" | "POST", path: string) => ({ method, path, global: true, summary: path, tag: "t", handle: async () => path });
+    const routes = [route("GET", "/workspaces/{ws}/{inviteId}"), route("GET", "/workspaces/{ws}/members"), route("GET", "/workspaces/new/members")];
+    for (const table of [routes, [...routes].reverse()] as Routes[]) {
+      expect(matchRoute(table, "GET", "/workspaces/new/members")?.route.path).toBe("/workspaces/new/members");
+      expect(matchRoute(table, "GET", "/workspaces/team/members")).toMatchObject({ route: { path: "/workspaces/{ws}/members" }, params: { ws: "team" } });
+      // A literal spelled with escapes is a parameter value, not the literal.
+      expect(matchRoute(table, "GET", "/workspaces/n%65w/members")).toMatchObject({ route: { path: "/workspaces/{ws}/members" }, params: { ws: "new" } });
+      expect(matchRoute(table, "GET", "/workspaces/x")).toBeNull();
+      expect(() => matchRoute(table, "POST", "/workspaces/new/members")).toThrow(HttpError);
+    }
+  });
+
+  it("voids invites past their inviter's authority, and limits revoking to grantable roles (REVIEW-0002 R1, R2)", async () => {
+    const { call, user } = await start();
+    const owner = await user("owner@example.com");
+    const admin = await user("admin@example.com");
+    await call("POST", "/workspaces", { name: "Team", slug: "team" }, owner.token);
+    const asAdmin = await call("POST", "/workspaces/team/invites", { email: admin.email, role: "admin" }, owner.token);
+    await call("POST", "/invites/accept", { token: asAdmin.body.token }, admin.token);
+
+    const kept = await call("POST", "/workspaces/team/invites", { email: "alt@example.com", role: "member" }, admin.token);
+    const cto = await call("POST", "/workspaces/team/invites", { email: "cto@example.com", role: "owner" }, owner.token);
+    expect((await call("DELETE", `/workspaces/team/invites/${cto.body.id}`, undefined, admin.token)).status).toBe(403);
+    expect((await call("POST", "/workspaces/team/invites", { email: "cto@example.com", role: "viewer" }, admin.token)).status).toBe(403);
+
+    expect((await call("DELETE", `/workspaces/team/members/${admin.id}`, undefined, owner.token)).status).toBe(200);
+    expect((await call("POST", "/invites/accept", { token: kept.body.token }, admin.token)).status).toBe(404);
+    expect((await call("GET", "/workspaces/team", undefined, admin.token)).status).toBe(404);
+    expect((await call("GET", "/workspaces/team/invites", undefined, owner.token)).body.map((i: { email: string }) => i.email)).toEqual(["cto@example.com"]);
+  });
+
+  it("lets exactly one of two users accept an invite at once, and refuses to transfer to oneself", async () => {
+    const { call, user } = await start();
+    const owner = await user("owner@example.com");
+    const first = await user("first@example.com");
+    const second = await user("second@example.com");
+    await call("POST", "/workspaces", { name: "Team", slug: "team" }, owner.token);
+    const invite = await call("POST", "/workspaces/team/invites", { email: "x@example.com", role: "member" }, owner.token);
+    const statuses = await Promise.all([first, second].map(async (u) => (await call("POST", "/invites/accept", { token: invite.body.token }, u.token)).status));
+    expect(statuses.sort()).toEqual([200, 409]);
+    expect((await call("GET", "/workspaces/team/members", undefined, owner.token)).body).toHaveLength(2);
+
+    expect((await call("POST", "/workspaces/team/transfer", { userId: owner.id }, owner.token)).status).toBe(400);
+  });
+
+  it("tells /me how many workspaces the user has, and lets one with none create one (REVIEW-0002 OQ-2)", async () => {
+    const { call, user } = await start();
+    const dev = await user("dev@example.com");
+    expect((await call("GET", "/me", undefined, dev.token)).body).toMatchObject({ user: { id: dev.id }, workspaces: 1 });
+    await call("DELETE", "/workspaces/dev", undefined, dev.token);
+    // Reading never creates one.
+    expect((await call("GET", "/workspaces", undefined, dev.token)).body).toEqual([]);
+    expect((await call("GET", "/me", undefined, dev.token)).body.workspaces).toBe(0);
+    expect((await call("GET", "/me", undefined, dev.token)).body.workspaces).toBe(0);
+    expect((await call("POST", "/workspaces", { name: "Fresh Start" }, dev.token)).body).toMatchObject({ slug: "fresh-start", role: "owner" });
+    expect((await call("GET", "/me", undefined, dev.token)).body.workspaces).toBe(1);
+  });
+
+  it("redirects a member's request on an old slug to the current one, with 308 (REVIEW-0002 OQ-5)", async () => {
+    const { call, user, base } = await start();
+    const owner = await user("owner@example.com");
+    const stranger = await user("stranger@example.com");
+    await call("POST", "/workspaces", { name: "Team", slug: "team" }, owner.token);
+    await call("PATCH", "/workspaces/team", { slug: "team-b" }, owner.token);
+    await call("PATCH", "/workspaces/team-b", { slug: "team-c" }, owner.token);
+
+    for (const old of ["team", "team-b"]) {
+      expect(await call("GET", `/workspaces/${old}/members?x=1&y=a%20b`, undefined, owner.token)).toMatchObject({
+        status: 308,
+        location: "/workspaces/team-c/members?x=1&y=a%20b",
+      });
+      const invite = await call("POST", `/workspaces/${old}/invites`, { email: "x@example.com", role: "viewer" }, owner.token);
+      expect(invite).toMatchObject({ status: 308, location: "/workspaces/team-c/invites" });
+      // Non-members learn nothing: an alias is a 404 like an unknown slug.
+      expect((await call("GET", `/workspaces/${old}`, undefined, stranger.token)).status).toBe(404);
+      expect((await call("GET", `/workspaces/${old}/members`, undefined, stranger.token)).status).toBe(404);
+    }
+    expect((await call("GET", "/workspaces/team-c", undefined, owner.token)).status).toBe(200);
+    expect((await call("POST", "/workspaces", { name: "Mine", slug: "team" }, stranger.token)).status).toBe(409);
+
+    // Following the redirect keeps the method and body.
+    const followed = await fetch(`${base}/workspaces/team/invites`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "y@example.com", role: "viewer" }),
+    });
+    expect(followed.status).toBe(200);
+    expect(await followed.json()).toMatchObject({ email: "y@example.com", role: "viewer" });
+
+    // Deleting the workspace frees its old slugs.
+    expect((await call("DELETE", "/workspaces/team-c", undefined, owner.token)).status).toBe(200);
+    expect((await call("GET", "/workspaces/team", undefined, owner.token)).status).toBe(404);
+    expect((await call("POST", "/workspaces", { name: "Mine", slug: "team" }, stranger.token)).status).toBe(200);
   });
 });

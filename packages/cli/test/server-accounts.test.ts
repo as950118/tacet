@@ -68,7 +68,7 @@ describe.each(backends)("accounts over HTTP on $name", ({ location }) => {
     expect(signup.body.user).not.toHaveProperty("passwordHash");
     const token = signup.body.token as string;
 
-    expect((await call("GET", "/me", undefined, token)).body).toEqual({ user: signup.body.user });
+    expect((await call("GET", "/me", undefined, token)).body).toEqual({ user: signup.body.user, workspaces: 1 });
     expect((await call("GET", "/me")).status).toBe(401);
     expect((await call("GET", "/me", undefined, TOKEN)).status).toBe(401);
     expect((await call("POST", "/auth/signup", { email: "dev@example.com", password: PASSWORD })).status).toBe(409);
@@ -221,7 +221,7 @@ describe.each(backends)("QA-0001 accounts over HTTP on $name", ({ location }) =>
     servers.splice(servers.indexOf(before.api), 1);
 
     const { call } = await open(index);
-    expect((await call("GET", "/me", { token: signup.body.token })).body).toEqual({ user: signup.body.user });
+    expect((await call("GET", "/me", { token: signup.body.token })).body).toEqual({ user: signup.body.user, workspaces: 1 });
     expect((await call("POST", "/auth/login", { body: { email: "stay@example.com", password: PASSWORD } })).status).toBe(200);
     expect((await call("POST", "/auth/signup", { body: { email: "stay@example.com", password: PASSWORD } })).status).toBe(409);
   });

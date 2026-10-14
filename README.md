@@ -451,17 +451,17 @@ curl -H "Authorization: Bearer <token>" localhost:4318/me
 | POST | `/auth/signup` | `{email, password, displayName?}` 가입하고 바로 로그인한다. 비밀번호는 10~256자. 이미 가입된 이메일이면 409. |
 | POST | `/auth/login` | `{email, password}` 세션 토큰을 발급한다. 15분에 실패 10회가 넘으면(IP·이메일별) 429와 `Retry-After`. |
 | POST | `/auth/logout` | 현재 세션을 끝낸다(세션 토큰 필요). |
-| GET | `/me` | 로그인한 사용자(세션 토큰 필요). |
+| GET | `/me` | 로그인한 사용자와 그가 속한 워크스페이스 수(`workspaces`, 0이면 하나 만들도록 안내한다). 세션 토큰 필요. |
 | GET, POST | `/workspaces` | 내 워크스페이스 목록과 내 역할 / `{name, slug?}`로 만들기(만든 사람이 owner). |
-| GET, PATCH, DELETE | `/workspaces/{ws}` | 조회 / 이름·slug 변경(admin 이상) / 삭제(owner). |
+| GET, PATCH, DELETE | `/workspaces/{ws}` | 조회 / 이름·slug 변경(admin 이상, 예전 slug는 별칭으로 남아 308으로 새 slug로 보낸다) / 삭제(owner). |
 | GET | `/workspaces/{ws}/members` | 멤버와 역할. `PATCH`·`DELETE …/members/{userId}`로 역할 변경(`{role}`)·제거. |
-| POST | `/workspaces/{ws}/leave`, `/workspaces/{ws}/transfer` | 탈퇴 / `{userId}`에게 소유권 이전(owner는 admin이 된다). |
+| POST | `/workspaces/{ws}/leave`, `/workspaces/{ws}/transfer` | 탈퇴 / 다른 멤버 `{userId}`에게 소유권 이전(owner는 admin이 된다, 자기 자신이면 400). |
 | GET, POST | `/workspaces/{ws}/invites` | 대기 중인 초대 / `{email, role}`로 초대(admin 이상). 토큰은 이 응답에서 한 번만 준다. `DELETE …/invites/{inviteId}`로 취소. |
 | POST | `/invites/accept` | `{token}` 초대를 수락한다. 초대 이메일과 계정 이메일이 달라도 된다. |
 
 - 세션 토큰은 30일 동안 유효하고, 쓸 때마다 연장된다. 서버는 토큰의 해시만 저장한다. 만료된 세션은 시작할 때와 매시간 지운다.
 - 세션 토큰으로는 기존 `/projects` 라우트를 쓸 수 없다. 이 라우트는 여전히 서버 토큰(`TACET_API_TOKEN`)이 필요하다. 서버 토큰이 없는 로컬 서버는 예전처럼 누구에게나 열려 있다.
-- 가입하면 개인 워크스페이스가 함께 만들어지고 그 사용자가 owner가 된다. 역할은 owner > admin > member > viewer다. owner가 아니면 자기보다 낮은 역할만 부여·변경·제거할 수 있고, 마지막 owner는 강등·제거·탈퇴할 수 없다(409). 멤버가 아닌 워크스페이스는 404다. 초대 토큰은 7일 동안 한 번만 쓸 수 있고 해시만 저장된다. 자세한 명세는 `.company-os/projects/apilens-platform/api/API-0001-workspaces.md`에 있다.
+- 가입하면 개인 워크스페이스가 함께 만들어지고 그 사용자가 owner가 된다. 역할은 owner > admin > member > viewer다. owner가 아니면 자기보다 낮은 역할만 부여·변경·제거할 수 있고, 마지막 owner는 강등·제거·탈퇴할 수 없다(409). 멤버가 아닌 워크스페이스는 404다. 초대 토큰은 7일 동안 한 번만 쓸 수 있고 해시만 저장된다. 초대한 사람이 제거·강등되거나 탈퇴하면 그가 더는 부여할 수 없는 대기 초대는 지워지고, 수락할 때도 초대한 사람의 현재 역할을 다시 확인한다. 만료된 초대는 세션과 함께 매시간 지운다. 자세한 명세는 `.company-os/projects/apilens-platform/api/API-0001-workspaces.md`에 있다.
 - 리버스 프록시(Render 등) 뒤에서는 `--trust-proxy`(`TACET_TRUST_PROXY=true`)를 켜야 로그인 제한이 실제 클라이언트 IP 기준으로 동작한다.
 
 ### tacet.config.json

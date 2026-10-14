@@ -94,6 +94,25 @@
 | 4. 만료된 초대 정리 | 매시간 도는 세션 정리에 함께 넣는다. |
 | 5. slug를 바꾸면 예전 링크가 깨짐 | **예전 slug를 별칭으로 남겨 새 slug로 연결한다.** 예전 경로는 308로 새 경로에 리다이렉트한다. 별칭은 그 워크스페이스 몫으로 예약해서 다른 워크스페이스가 가져갈 수 없다. 워크스페이스가 삭제되면 별칭도 함께 사라진다. |
 
+## Follow-up Resolution
+
+| # | Status | Resolution |
+|---|--------|------------|
+| R1 | Resolved | 두 곳에서 막는다. (a) `setRole`·`removeMember`·`leave`·`transferOwnership`이 같은 잠금 트랜잭션에서 대상(이전 시 호출자)의 대기 초대 중 새 역할로 부여할 수 없는 것을 지운다(`dropUngrantableInvites`; 제거·탈퇴면 전부, member·viewer는 초대할 수 없으므로 전부). (b) `acceptInvite`가 워크스페이스 잠금 안에서 `invited_by`의 현재 역할로 다시 확인하고, 멤버가 아니거나(계정 삭제로 NULL 포함) 부여할 수 없으면 취소된 초대와 같은 404(`invite-not-found`)다. 리뷰 재현 시나리오(core, HTTP)와 DB를 직접 바꿔 (b)만 검증하는 회귀 테스트를 추가했다. |
+| R2 | Resolved | `revokeInvite`와 같은 이메일 재초대(대체)가 대상 초대 역할에 `mayGrant`를 적용한다(403). core·HTTP 테스트 추가. |
+| R3 | Resolved | `acceptInvite`는 토큰 해시로 `workspace_id`를 먼저 찾고, `workspace:<id>` 잠금 트랜잭션 안에서 초대를 다시 읽는다(`invite:<hash>` 잠금은 없앴다). 수락·취소 동시 실행과 두 사용자의 동시 수락(200/409) 테스트 추가. |
+| R4 | Resolved | `isUniqueViolation`(PG 23505, SQLite UNIQUE)을 추가했다. `create()`는 자동 slug면 최대 3번 다시 시도하고, 직접 준 slug면 409. `update()`의 slug 경합도 409. `signUp`은 unique 위반이면 트랜잭션을 최대 3번 다시 실행한다(개인 워크스페이스 slug가 새 접미사를 고른다). PG에서 재시도를 끄면 실패하는 것을 확인한 동시 생성·가입 테스트 추가. |
+| R5 | Resolved | `server-workspaces.test.ts`: 워크스페이스 간 IDOR(멤버 PATCH·DELETE, 초대 DELETE, transfer → 404), 전역 라우트 405, 깨진 퍼센트 인코딩 400, 인코딩된 슬래시(세그먼트 값으로 남아 400), 동시 수락. 리터럴 우선순위는 현재 라우트 표에 겹치는 경로가 없어 `matchRoute`를 테스트용으로 export해 합성 라우트 표(순서 무관)로 검증한다. |
+| R6 | Open → TASK-0005 | 미등록 `{name}`·중복 라우트 감지, scope별 마운트. |
+| N1 | Resolved | PRD-0001 AC-2를 "가입 시(계정과 같은 트랜잭션)"로 고치고 OQ-2 결정을 반영했다. TASK-0004 Summary도 맞췄다. |
+| N2 | Resolved | 자기 자신에게 이전하면 400(`invalid-transfer`). 이미 owner인 대상에게 이전하면 호출자만 admin이 된다고 API-0001에 적었다. |
+| N3 | Open → TASK-0008 | REVIEW-0001 R3와 함께 이벤트 수 기록. |
+| OQ-2 | Resolved | `GET /me`에 `workspaces`(멤버십 수)를 추가했다. 워크스페이스가 0개인 사용자(개인 워크스페이스 삭제, 워크스페이스 이전의 사용자 행)도 `POST /workspaces`로 만들 수 있음을 테스트했다. GET에서 자동으로 만들지 않는다. |
+| OQ-4 | Resolved | `PlatformWorkspaces.purgeExpiredInvites()`(수락되지 않고 만료된 초대만, 수락된 초대는 이력으로 남김)를 서버의 시작 시·매시간 정리에 붙였다. 테스트 추가. |
+| OQ-5 | Resolved | 마이그레이션 2 `workspace_slug_aliases(slug PK, workspace_id → workspaces ON DELETE CASCADE, created_at)`. slug 변경 시 같은 트랜잭션에서 예전 slug를 별칭으로 기록한다. 현재 slug나 다른 워크스페이스의 별칭은 쓸 수 없고, 자기 별칭으로 되돌리면 그 별칭을 지운다. 조회는 별칭을 해석하고(현재 slug 우선), HTTP는 멤버십 확인 뒤 같은 경로·쿼리의 새 slug로 308을 준다(비멤버 404). 체인·삭제 cascade 포함 core·HTTP 테스트(양 방언). |
+
+검증: `npm run build` 성공. `npm test` 19 files, 264 통과. `TACET_TEST_POSTGRES_URL=… npm test` 19 files, 330 통과.
+
 ## Handoff
 
 | From | To | Artifact |

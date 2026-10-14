@@ -60,6 +60,21 @@ CREATE TABLE workspace_projects (
 `;
     },
   },
+  {
+    version: 2,
+    name: "workspace-slug-aliases",
+    sql: (dialect) => {
+      const T = dialect === "postgres" ? 'TEXT COLLATE "C"' : "TEXT";
+      return `
+-- A workspace's earlier slugs (REVIEW-0002 OQ-5): old links redirect to the current slug, and no other workspace can
+-- take them. They go with the workspace.
+CREATE TABLE workspace_slug_aliases (
+  slug ${T} PRIMARY KEY, workspace_id ${T} NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  created_at ${T} NOT NULL);
+CREATE INDEX idx_workspace_slug_aliases_workspace ON workspace_slug_aliases(workspace_id);
+`;
+    },
+  },
 ];
 
 export interface PlatformMigrationResult {

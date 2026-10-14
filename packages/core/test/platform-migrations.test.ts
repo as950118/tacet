@@ -72,9 +72,21 @@ describe.each(backends)("platform migrations on $name", ({ location }) => {
       driver.run("INSERT INTO workspace_projects (id, workspace_id, slug, name, index_key, created_at) VALUES ('p2', 'w1', 'web', 'Web 2', 'p-2', 'now')"),
     ).rejects.toThrow();
 
+    await driver.run("INSERT INTO workspace_slug_aliases (slug, workspace_id, created_at) VALUES ('old-acme', 'w1', 'now')");
+    await expect(driver.run("INSERT INTO workspace_slug_aliases (slug, workspace_id, created_at) VALUES ('old-acme', 'w1', 'now')")).rejects.toThrow();
+
     await driver.run("DELETE FROM workspaces WHERE id = 'w1'");
     expect(await driver.all("SELECT * FROM workspace_members")).toEqual([]);
     expect(await driver.all("SELECT * FROM workspace_projects")).toEqual([]);
+    expect(await driver.all("SELECT * FROM workspace_slug_aliases")).toEqual([]);
+  });
+
+  it("upgrades a database at migration 1 without touching its rows", async () => {
+    expect(await migratePlatform(driver, PLATFORM_MIGRATIONS.slice(0, 1))).toEqual({ applied: [1], version: 1 });
+    await user("u1", "a@example.com");
+    expect(await migratePlatform(driver)).toEqual({ applied: [2], version: 2 });
+    expect(await driver.all("SELECT id FROM users")).toEqual([{ id: "u1" }]);
+    expect(await driver.all("SELECT * FROM workspace_slug_aliases")).toEqual([]);
   });
 
   it("keeps accounts when the index is rebuilt for a new layout", async () => {

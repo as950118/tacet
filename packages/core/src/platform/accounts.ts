@@ -30,6 +30,9 @@ export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** A session used again after this long gets a fresh expiry (sliding expiration), at most one write per this interval. */
 const SESSION_TOUCH_MS = 60 * 60 * 1000;
 
+/** How many times sign-up runs when `onSignUp` loses a race for a unique value. */
+const SIGN_UP_ATTEMPTS = 3;
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface UserRow {
@@ -61,22 +64,26 @@ export class PlatformAccounts {
     const displayName = input.displayName?.trim().slice(0, 100) || null;
     const passwordHash = await hashPassword(input.password);
     const user: User = { id: randomUUID(), email, displayName, createdAt: this.now().toISOString() };
-    try {
-      await this.db.transaction(async (tx) => {
-        await tx.run("INSERT INTO users (id, email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)", [
-          user.id,
-          user.email,
-          passwordHash,
-          user.displayName,
-          user.createdAt,
-        ]);
-        await this.options.onSignUp?.(user, tx);
-      });
-    } catch (err) {
-      if (await this.userByEmail(email)) throw new AccountError("email-taken", "An account with this email already exists");
-      throw err;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.db.transaction(async (tx) => {
+          await tx.run("INSERT INTO users (id, email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)", [
+            user.id,
+            user.email,
+            passwordHash,
+            user.displayName,
+            user.createdAt,
+          ]);
+          await this.options.onSignUp?.(user, tx);
+        });
+        return this.startSession(user);
+      } catch (err) {
+        if (await this.userByEmail(email)) throw new AccountError("email-taken", "An account with this email already exists");
+        // A concurrent sign-up took what `onSignUp` picked (the personal workspace's slug, REVIEW-0002 R4): run it again.
+        if (attempt < SIGN_UP_ATTEMPTS && isUniqueViolation(err)) continue;
+        throw err;
+      }
     }
-    return this.startSession(user);
   }
 
   /** Throws `wrong-credentials` for an unknown email and a wrong password alike, after the same amount of work. */
@@ -165,6 +172,13 @@ export function normalizeEmail(value: unknown): string {
   const email = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (email.length > 254 || !EMAIL.test(email)) throw new AccountError("invalid-email", "Enter a valid email address");
   return email;
+}
+
+/** A unique-constraint violation from either database: a concurrent writer took the value between check and write. */
+export function isUniqueViolation(err: unknown): boolean {
+  const { code, errcode, message } = (err ?? {}) as { code?: unknown; errcode?: unknown; message?: unknown };
+  // PostgreSQL's unique_violation; SQLite's SQLITE_CONSTRAINT_UNIQUE and SQLITE_CONSTRAINT_PRIMARYKEY.
+  return code === "23505" || errcode === 2067 || errcode === 1555 || /UNIQUE constraint failed/.test(String(message ?? ""));
 }
 
 function checkPassword(value: unknown): void {

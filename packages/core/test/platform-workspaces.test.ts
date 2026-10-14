@@ -103,7 +103,7 @@ describe.each(backends)("PlatformWorkspaces on $name", ({ location }) => {
     expect(await code(workspaces.create(owner.id, { name: "  " }))).toBe("invalid-name");
 
     expect(await workspaces.update(owner.id, "acme-web", { name: "Acme", slug: "acme" })).toMatchObject({ slug: "acme", name: "Acme" });
-    expect(await code(workspaces.get(owner.id, "acme-web"))).toBe("not-found");
+    expect(await workspaces.get(owner.id, "acme-web")).toMatchObject({ slug: "acme" });
     expect(await code(workspaces.update(owner.id, "acme", { slug: "owner" }))).toBe("slug-taken");
     await workspaces.delete(owner.id, "acme");
     expect((await workspaces.listMine(owner.id)).map((w) => w.slug)).toEqual(["owner"]);
@@ -237,5 +237,170 @@ describe.each(backends)("PlatformWorkspaces on $name", ({ location }) => {
     expect(await workspaces.acceptInvite(owner.id, (await workspaces.createInvite(owner.id, "team", { email: "x@example.com", role: "viewer" })).token)).toMatchObject({ role: "owner" });
     const higher = await workspaces.createInvite(owner.id, "team", { email: "y@example.com", role: "owner" });
     expect(await workspaces.acceptInvite(admin.id, higher.token)).toMatchObject({ role: "owner" });
+  });
+
+  it("voids an invite once its inviter is removed, demoted or gone (REVIEW-0002 R1)", async () => {
+    const owner = await signUp("owner@example.com");
+    const admin = await signUp("admin@example.com");
+    const alt = await signUp("alt@example.com");
+    await team(owner, { admin });
+    const pending = async () => (await workspaces.invites(owner.id, "team")).map((i) => `${i.email}:${i.role}`).sort();
+
+    // The review's scenario: an admin keeps a token, is removed, and tries to come back with it.
+    const kept = await workspaces.createInvite(admin.id, "team", { email: alt.email, role: "member" });
+    await workspaces.removeMember(owner.id, "team", admin.id);
+    expect(await pending()).toEqual([]);
+    expect(await code(workspaces.acceptInvite(admin.id, kept.token))).toBe("invite-not-found");
+    expect(await code(workspaces.get(admin.id, "team"))).toBe("not-found");
+
+    // Demoted to member, who cannot invite at all: all their invites go, other people's stay.
+    await workspaces.acceptInvite(admin.id, (await workspaces.createInvite(owner.id, "team", { email: admin.email, role: "admin" })).token);
+    await workspaces.createInvite(admin.id, "team", { email: "m@example.com", role: "member" });
+    await workspaces.createInvite(admin.id, "team", { email: "v@example.com", role: "viewer" });
+    await workspaces.createInvite(owner.id, "team", { email: "o@example.com", role: "member" });
+    await workspaces.setRole(owner.id, "team", admin.id, "member");
+    expect(await pending()).toEqual(["o@example.com:member"]);
+
+    // Leaving takes one's invites along; an owner demoted to admin keeps only what an admin may grant.
+    await workspaces.setRole(owner.id, "team", admin.id, "owner");
+    await workspaces.createInvite(admin.id, "team", { email: "a@example.com", role: "admin" });
+    await workspaces.createInvite(admin.id, "team", { email: "v@example.com", role: "viewer" });
+    await workspaces.transferOwnership(admin.id, "team", owner.id);
+    expect(await pending()).toEqual(["o@example.com:member", "v@example.com:viewer"]);
+    await workspaces.leave(admin.id, "team");
+    expect(await pending()).toEqual(["o@example.com:member"]);
+  });
+
+  it("checks the inviter's current role when an invite is accepted, whatever cleaned up before", async () => {
+    const owner = await signUp("owner@example.com");
+    const admin = await signUp("admin@example.com");
+    const joiner = await signUp("joiner@example.com");
+    const ws = await team(owner, { admin });
+    const byAdmin = await workspaces.createInvite(admin.id, "team", { email: "x@example.com", role: "member" });
+    // Behind the API's back, as an older version (or a bug) could leave it: the invite outlives the admin's authority.
+    await db.run("UPDATE workspace_members SET role = 'member' WHERE workspace_id = ? AND user_id = ?", [ws.id, admin.id]);
+    expect(await code(workspaces.acceptInvite(joiner.id, byAdmin.token))).toBe("invite-not-found");
+    await db.run("UPDATE workspace_members SET role = 'admin' WHERE workspace_id = ? AND user_id = ?", [ws.id, admin.id]);
+    expect(await workspaces.acceptInvite(joiner.id, byAdmin.token)).toMatchObject({ slug: "team", role: "member" });
+
+    // An inviter whose account is gone (invited_by set to NULL) vouches for nothing.
+    const orphan = await workspaces.createInvite(admin.id, "team", { email: "y@example.com", role: "viewer" });
+    await db.run("DELETE FROM users WHERE id = ?", [admin.id]);
+    const late = await signUp("late@example.com");
+    expect(await code(workspaces.acceptInvite(late.id, orphan.token))).toBe("invite-not-found");
+  });
+
+  it("lets an admin revoke or replace only invites for roles they could grant (REVIEW-0002 R2)", async () => {
+    const owner = await signUp("owner@example.com");
+    const admin = await signUp("admin@example.com");
+    await team(owner, { admin });
+    const cto = await workspaces.createInvite(owner.id, "team", { email: "cto@example.com", role: "owner" });
+    const dev = await workspaces.createInvite(owner.id, "team", { email: "dev@example.com", role: "member" });
+    expect(await code(workspaces.revokeInvite(admin.id, "team", cto.id))).toBe("forbidden");
+    expect(await code(workspaces.createInvite(admin.id, "team", { email: "cto@example.com", role: "viewer" }))).toBe("forbidden");
+    expect((await workspaces.invites(owner.id, "team")).map((i) => i.id).sort()).toEqual([cto.id, dev.id].sort());
+    expect(await code(workspaces.createInvite(admin.id, "team", { email: "dev@example.com", role: "viewer" }))).toBe("ok");
+    expect(await code(workspaces.revokeInvite(owner.id, "team", cto.id))).toBe("ok");
+  });
+
+  it("serializes accepting with revoking the invite (REVIEW-0002 R3)", async () => {
+    const owner = await signUp("owner@example.com");
+    const joiner = await signUp("joiner@example.com");
+    await team(owner);
+    const invite = await workspaces.createInvite(owner.id, "team", { email: joiner.email, role: "member" });
+    const [accepted, revoked] = await Promise.all([
+      code(workspaces.acceptInvite(joiner.id, invite.token)),
+      code(workspaces.revokeInvite(owner.id, "team", invite.id)),
+    ]);
+    // Either the accept ran first (and the invite is no longer pending) or the revoke did (and nobody joined).
+    expect([accepted, revoked].sort()).toEqual(accepted === "ok" ? ["not-found", "ok"] : ["invite-not-found", "ok"]);
+    expect((await workspaces.members(owner.id, "team")).length).toBe(accepted === "ok" ? 2 : 1);
+  });
+
+  it("picks other slugs for concurrent sign-ups and creates, and reports a chosen one as taken (REVIEW-0002 R4)", async () => {
+    const users = await Promise.all(["a", "b", "c", "d"].map((domain) => signUp(`dev@${domain}.example`)));
+    const personal = await Promise.all(users.map(async (u) => (await workspaces.listMine(u.id))[0].slug));
+    expect(new Set(personal).size).toBe(4);
+
+    const owner = users[0];
+    const made = await Promise.all([1, 2, 3].map(() => workspaces.create(owner.id, { name: "Same Name" })));
+    expect(new Set(made.map((w) => w.slug)).size).toBe(3);
+    const chosen = await Promise.all([1, 2, 3].map(() => code(workspaces.create(owner.id, { name: "X", slug: "chosen" }))));
+    expect(chosen.sort()).toEqual(["ok", "slug-taken", "slug-taken"]);
+  });
+
+  it("refuses to transfer ownership to oneself; to another owner it only steps the caller down (REVIEW-0002 N2)", async () => {
+    const owner = await signUp("owner@example.com");
+    const second = await signUp("second@example.com");
+    await team(owner, { owner: second });
+    expect(await code(workspaces.transferOwnership(owner.id, "team", owner.id))).toBe("invalid-transfer");
+    const members = await workspaces.transferOwnership(owner.id, "team", second.id);
+    expect(Object.fromEntries(members.map((m) => [m.email, m.role]))).toEqual({ [owner.email]: "admin", [second.email]: "owner" });
+  });
+
+  it("lets a user with no workspace create one, and counts them (REVIEW-0002 OQ-2)", async () => {
+    const dev = await signUp("dev@example.com");
+    expect(await workspaces.countMine(dev.id)).toBe(1);
+    await workspaces.delete(dev.id, "dev");
+    expect(await workspaces.countMine(dev.id)).toBe(0);
+    expect(await workspaces.listMine(dev.id)).toEqual([]);
+    expect(await workspaces.create(dev.id, { name: "Fresh" })).toMatchObject({ slug: "fresh", role: "owner" });
+
+    // A user from before workspaces existed: a bare row, no personal workspace.
+    const old = randomUUID();
+    await db.run("INSERT INTO users (id, email, password_hash, created_at) VALUES (?, 'old@example.com', 'x', ?)", [old, now.toISOString()]);
+    expect(await workspaces.countMine(old)).toBe(0);
+    expect(await workspaces.create(old, { name: "Old Team" })).toMatchObject({ slug: "old-team", role: "owner" });
+    expect(await workspaces.countMine(old)).toBe(1);
+  });
+
+  it("purges expired invites nobody accepted, keeping accepted ones (REVIEW-0002 OQ-4)", async () => {
+    const owner = await signUp("owner@example.com");
+    const joiner = await signUp("joiner@example.com");
+    await team(owner);
+    await workspaces.acceptInvite(joiner.id, (await workspaces.createInvite(owner.id, "team", { email: joiner.email, role: "member" })).token);
+    await workspaces.createInvite(owner.id, "team", { email: "old@example.com", role: "viewer" });
+    now = new Date(now.getTime() + INVITE_TTL_MS / 2);
+    const fresh = await workspaces.createInvite(owner.id, "team", { email: "new@example.com", role: "viewer" });
+    expect(await workspaces.purgeExpiredInvites()).toBe(0);
+    now = new Date(now.getTime() + INVITE_TTL_MS / 2);
+    expect(await workspaces.purgeExpiredInvites()).toBe(1);
+    expect((await workspaces.invites(owner.id, "team")).map((i) => i.id)).toEqual([fresh.id]);
+    expect(await db.all("SELECT id FROM workspace_invites WHERE accepted_at IS NOT NULL")).toHaveLength(1);
+  });
+
+  it("keeps old slugs as aliases of their workspace (REVIEW-0002 OQ-5)", async () => {
+    const owner = await signUp("owner@example.com");
+    const other = await signUp("other@example.com");
+    const stranger = await signUp("stranger@example.com");
+    await team(owner, { member: other });
+    await workspaces.update(owner.id, "team", { slug: "team-b" });
+    await workspaces.update(owner.id, "team-b", { slug: "team-c" });
+
+    // A chain: both earlier slugs name the workspace, for members only.
+    for (const slug of ["team", "team-b", "team-c"]) {
+      expect(await workspaces.get(owner.id, slug)).toMatchObject({ slug: "team-c" });
+      expect(await code(workspaces.get(stranger.id, slug))).toBe("not-found");
+    }
+    expect((await workspaces.members(other.id, "team")).length).toBe(2);
+
+    // Reserved for this workspace: not as a new slug, not as another's rename, not for a generated one.
+    const strangers = await workspaces.create(stranger.id, { name: "Mine", slug: "mine" });
+    expect(await code(workspaces.create(stranger.id, { name: "Team", slug: "team" }))).toBe("slug-taken");
+    expect(await code(workspaces.update(stranger.id, "mine", { slug: "team-b" }))).toBe("slug-taken");
+    expect((await workspaces.create(stranger.id, { name: "Team" })).slug).toMatch(/^team-[0-9a-f]{4}$/);
+    expect(strangers.slug).toBe("mine");
+
+    // Taking back an alias drops it; the slug it leaves becomes one.
+    expect(await workspaces.update(owner.id, "team-c", { slug: "team" })).toMatchObject({ slug: "team" });
+    const aliases = async () =>
+      (await db.all<{ slug: string }>("SELECT slug FROM workspace_slug_aliases ORDER BY slug")).map((r) => r.slug);
+    expect(await aliases()).toEqual(["team-b", "team-c"]);
+    expect(await workspaces.get(owner.id, "team-c")).toMatchObject({ slug: "team" });
+
+    // Deleting the workspace frees its aliases.
+    await workspaces.delete(owner.id, "team-b");
+    expect(await aliases()).toEqual([]);
+    expect(await code(workspaces.create(stranger.id, { name: "Now Mine", slug: "team-c" }))).toBe("ok");
   });
 });

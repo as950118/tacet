@@ -231,7 +231,7 @@ SQL 구현(`SqlIndexStore`)은 하나이고 두 DB에서 공통으로 되는 문
 다른 저장소(예: 원격 서비스)는 `IndexStore`를 직접 구현하면 된다.
 
 **계정 테이블 (`packages/core/src/platform/`)**: 같은 DB(Postgres는 같은 `?schema=`)에 회원·워크스페이스 테이블을 둔다
-(`users`, `sessions`, `workspaces`, `workspace_members`, `workspace_invites`, `workspace_projects`). index와 수명주기가 다르다.
+(`users`, `sessions`, `workspaces`, `workspace_members`, `workspace_invites`, `workspace_projects`, `workspace_slug_aliases`). index와 수명주기가 다르다.
 index는 캐시라서 `SCHEMA_VERSION`이 바뀌면 다시 만든다. 계정 데이터는 유일한 원본이라서 번호 붙은 마이그레이션(`PLATFORM_MIGRATIONS`,
 `platform_migrations` 테이블)으로만 바꾼다. index 재생성은 자기 테이블만 이름으로 지우므로 계정 테이블은 남는다. 마이그레이션은
 `platform-migrations` lock 아래 한 번만 실행되고, 이 버전이 모르는 더 새 마이그레이션이 적용된 DB는 거부한다. 외래 키를 쓰므로 SQLite
@@ -473,6 +473,9 @@ Page ┄usesApi┄▶ Endpoint   (추론: showsComponent/renders/calls/requests�
   - 가입 시 `PlatformAccounts`의 `onSignUp` 훅이 같은 트랜잭션에서 개인 워크스페이스를 만든다. 계정 코드는 워크스페이스를 모른다.
   - 비멤버에게는 404(존재 비노출), 역할이 부족하면 403이다. owner가 아니면 자기보다 낮은 역할만 다룰 수 있다. 멤버십 변경은 워크스페이스별 잠금 트랜잭션에서 실행하므로 마지막 owner가 사라지지 않는다.
   - 초대 토큰은 sha256 해시만 저장한다. 7일 동안 유효하고 한 번만 쓸 수 있다. 수락은 이메일이 아니라 토큰으로 증명하며, 기존 역할을 낮추지 않는다.
+  - 초대는 초대한 사람의 권한보다 오래 살지 않는다. 멤버를 제거·강등하거나 멤버가 탈퇴하면 그 사람이 새 역할로 부여할 수 없는 대기 초대를 같은 잠금 트랜잭션에서 지운다. 수락은 토큰으로 워크스페이스를 찾은 뒤 그 워크스페이스 잠금 안에서 초대를 다시 읽고, 초대한 사람의 현재 역할로 다시 확인한다(아니면 404). 만료된 초대는 세션과 함께 매시간 지운다.
+  - slug를 바꾸면 예전 slug는 `workspace_slug_aliases`(마이그레이션 2)에 남는다. 별칭도 그 워크스페이스를 가리키고 다른 워크스페이스는 쓸 수 없다. HTTP에서는 멤버십을 먼저 확인한 뒤(비멤버는 404) 같은 경로·쿼리의 새 slug로 308을 준다. 워크스페이스를 지우면 별칭도 cascade로 지워진다.
+  - 자동으로 고른 slug가 동시 요청과 겹치면(unique 위반) 새 접미사로 몇 번 다시 시도한다. 직접 준 slug가 겹치면 409다.
   - route path에는 `{name}` 파라미터를 쓸 수 있다(`PATH_PARAMS`가 형식 검증과 OpenAPI를 함께 만든다). 프로젝트 라우트는 `/projects/{project}` 아래에 마운트된 템플릿이다.
 
 ## 13. CI/CD (Phase 7, 구현됨)
