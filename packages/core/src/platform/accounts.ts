@@ -112,6 +112,19 @@ export class PlatformAccounts {
     await this.db.run("DELETE FROM sessions WHERE user_id = ?", [userId]);
   }
 
+  /**
+   * Deletes the sessions past their expiry. `authenticate` drops an expired session when it is shown again, but most
+   * never are (the browser was closed); this keeps them from piling up. Returns how many were deleted.
+   */
+  async purgeExpiredSessions(): Promise<number> {
+    const expired = await this.db.all<{ n: number | string }>("SELECT COUNT(*) AS n FROM sessions WHERE expires_at <= ?", [
+      this.now().toISOString(),
+    ]);
+    const count = Number(expired[0]?.n ?? 0);
+    if (count) await this.db.run("DELETE FROM sessions WHERE expires_at <= ?", [this.now().toISOString()]);
+    return count;
+  }
+
   private async userByEmail(email: string): Promise<(UserRow & { password_hash: string }) | undefined> {
     return (
       await this.db.all<UserRow & { password_hash: string }>(

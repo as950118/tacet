@@ -145,6 +145,11 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     }
     accounts = new PlatformAccounts(platformDb);
   }
+  // Expired sessions nobody presents again are deleted at start and then hourly (REVIEW-0001 R2).
+  const purgeSessions = () =>
+    void accounts?.purgeExpiredSessions().catch((err: unknown) => console.error("Purging expired sessions failed:", err));
+  purgeSessions();
+  const purgeTimer = accounts ? setInterval(purgeSessions, 60 * 60 * 1000).unref() : undefined;
   const loginFailures = new FailureThrottle();
 
   const workspace = (project: string) => {
@@ -524,6 +529,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       }),
     close: async () => {
       await new Promise<void>((done) => (server.listening ? server.close(() => done()) : done()));
+      clearInterval(purgeTimer);
       server.closeAllConnections?.();
       await database.close();
       await platformDb?.close();

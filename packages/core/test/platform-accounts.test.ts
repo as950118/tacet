@@ -82,6 +82,16 @@ describe("PlatformAccounts", () => {
     expect(await db.all("SELECT * FROM sessions")).toEqual([]);
   });
 
+  it("purges sessions past their expiry and keeps the live ones", async () => {
+    const stale = await accounts.signUp({ email: "a@example.com", password: PASSWORD });
+    now = new Date(now.getTime() + SESSION_TTL_MS / 2);
+    const live = await accounts.logIn({ email: "a@example.com", password: PASSWORD });
+    now = new Date(stale.expiresAt);
+    expect(await accounts.purgeExpiredSessions()).toBe(1);
+    expect(await accounts.purgeExpiredSessions()).toBe(0);
+    expect(await accounts.authenticate(live.token)).not.toBeNull();
+  });
+
   it("logs out one session or all of them", async () => {
     const first = await accounts.signUp({ email: "a@example.com", password: PASSWORD });
     const second = await accounts.logIn({ email: "a@example.com", password: PASSWORD });
