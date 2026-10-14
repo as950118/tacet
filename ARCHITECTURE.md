@@ -230,6 +230,14 @@ SQL 구현(`SqlIndexStore`)은 하나이고 두 DB에서 공통으로 되는 문
 `CAST(COUNT(*) AS INTEGER)`). JSON 함수 대신 조회에 필요한 값(`entities.route_path`, `component`)은 컬럼으로 둔다.
 다른 저장소(예: 원격 서비스)는 `IndexStore`를 직접 구현하면 된다.
 
+**계정 테이블 (`packages/core/src/platform/`)**: 같은 DB(Postgres는 같은 `?schema=`)에 회원·워크스페이스 테이블을 둔다
+(`users`, `sessions`, `workspaces`, `workspace_members`, `workspace_invites`, `workspace_projects`). index와 수명주기가 다르다.
+index는 캐시라서 `SCHEMA_VERSION`이 바뀌면 다시 만든다. 계정 데이터는 유일한 원본이라서 번호 붙은 마이그레이션(`PLATFORM_MIGRATIONS`,
+`platform_migrations` 테이블)으로만 바꾼다. index 재생성은 자기 테이블만 이름으로 지우므로 계정 테이블은 남는다. 마이그레이션은
+`platform-migrations` lock 아래 한 번만 실행되고, 이 버전이 모르는 더 새 마이그레이션이 적용된 DB는 거부한다. 외래 키를 쓰므로 SQLite
+연결은 `PRAGMA foreign_keys = ON`으로 연다. 워크스페이스의 프로젝트는 `workspace_projects.index_key`로 index의 프로젝트 이름을
+가리킨다. 그래서 프로젝트 이름을 바꿔도 index는 그대로다. 설계 근거는 `.company-os/projects/apilens-platform/adr/ADR-0002-auth-and-tenancy.md`.
+
 index는 extractor manifest의 **캐시**다. 각 row는 IR 객체 JSON 전체 + 조회용 컬럼만 가진다(외래키 없음, schema
 version이 다르면 재생성). 모든 테이블의 기본키 앞에 `project`가 붙는다(아래에서는 생략).
 
@@ -451,6 +459,16 @@ Page ┄usesApi┄▶ Endpoint   (추론: showsComponent/renders/calls/requests�
   route 표(method, path, query/body 파라미터, handler)가 요청 검증과 `/openapi.json`을 함께 만든다. 보안: 기본 127.0.0.1,
   그 밖의 host는 bearer 토큰 필수(`timingSafeEqual` 비교), 인덱싱 경로는 `--allow-dir` 안으로 제한(symlink 해석 후),
   body 1MB 제한, 같은 프로젝트의 쓰기는 직렬화. workspace 오류 중 "No …"/"not found"는 404, 그 밖의 입력 오류는 400.
+- **회원 (`--accounts`, `PlatformAccounts`)**: 요청마다 호출자(principal)를 정한다.
+  - `machine`: 서버 토큰을 가진 호출자. 서버 토큰이 없으면 모든 호출자가 machine이다.
+  - `user`: 유효한 세션 토큰을 가진 호출자.
+  - `anonymous`: 그 밖의 호출자.
+
+  route는 `access: public | user | machine`(기본 machine)으로 누가 부를 수 있는지 정하므로, 기존 라우트는 동작이 그대로다.
+  - 비밀번호: `node:crypto` scrypt(N=2^15, r=8, p=3). 파라미터는 해시 문자열에 함께 저장한다.
+  - 세션: 32바이트 랜덤 토큰. sha256 해시만 저장하고, 30일 동안 유효하며 쓸 때마다 연장한다. 만료된 세션은 시작할 때와 매시간 지운다.
+  - 없는 이메일로 로그인해도 더미 해시로 같은 계산을 해서, 응답 시간으로 가입 여부를 알 수 없다.
+  - 로그인 실패 제한(`FailureThrottle`)은 프로세스 메모리에 있으므로 인스턴스가 하나일 때를 전제로 한다.
 
 ## 13. CI/CD (Phase 7, 구현됨)
 

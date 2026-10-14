@@ -434,6 +434,29 @@ curl -H "Authorization: Bearer $TACET_API_TOKEN" localhost:4318/projects/admin/p
 - 배포(Supabase + Render + Vercel 대시보드 `web/`)는 [DEPLOY.md](./DEPLOY.md) 참고.
 - 브라우저에서 호출하려면 `--cors <origin>`. 라이브러리로는 `createTacetApiServer()`(`@tacet-api/cli`)의 `handle(req, res)`를 기존 Node 서버에 붙일 수 있다.
 
+#### 회원 (`--accounts`, 개발 중)
+
+`--accounts`(또는 `TACET_ACCOUNTS=true`)를 켜면 가입·로그인 라우트가 추가된다. 계정은 index DB에 함께 저장된다. 워크스페이스 단위의 프로젝트 권한은 아직 개발 중이다.
+
+```bash
+tacet platform migrate                              # 계정 테이블 생성·업그레이드 (serve --accounts도 시작할 때 실행한다)
+TACET_API_TOKEN=... tacet serve --accounts
+curl -X POST localhost:4318/auth/signup -H 'Content-Type: application/json' \
+  -d '{"email":"me@example.com","password":"at least 10 chars"}'        # → {user, token, expiresAt}
+curl -H "Authorization: Bearer <token>" localhost:4318/me
+```
+
+| Method | Path | 내용 |
+|---|---|---|
+| POST | `/auth/signup` | `{email, password, displayName?}` 가입하고 바로 로그인한다. 비밀번호는 10~256자. 이미 가입된 이메일이면 409. |
+| POST | `/auth/login` | `{email, password}` 세션 토큰을 발급한다. 15분에 실패 10회가 넘으면(IP·이메일별) 429와 `Retry-After`. |
+| POST | `/auth/logout` | 현재 세션을 끝낸다(세션 토큰 필요). |
+| GET | `/me` | 로그인한 사용자(세션 토큰 필요). |
+
+- 세션 토큰은 30일 동안 유효하고, 쓸 때마다 연장된다. 서버는 토큰의 해시만 저장한다. 만료된 세션은 시작할 때와 매시간 지운다.
+- 세션 토큰으로는 기존 `/projects` 라우트를 쓸 수 없다. 이 라우트는 여전히 서버 토큰(`TACET_API_TOKEN`)이 필요하다. 서버 토큰이 없는 로컬 서버는 예전처럼 누구에게나 열려 있다.
+- 리버스 프록시(Render 등) 뒤에서는 `--trust-proxy`(`TACET_TRUST_PROXY=true`)를 켜야 로그인 제한이 실제 클라이언트 IP 기준으로 동작한다.
+
 ### tacet.config.json
 
 ```json
