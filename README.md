@@ -436,7 +436,7 @@ curl -H "Authorization: Bearer $TACET_API_TOKEN" localhost:4318/projects/admin/p
 
 #### 회원 (`--accounts`, 개발 중)
 
-`--accounts`(또는 `TACET_ACCOUNTS=true`)를 켜면 가입·로그인 라우트가 추가된다. 계정은 index DB에 함께 저장된다. 워크스페이스 단위의 프로젝트 권한은 아직 개발 중이다.
+`--accounts`(또는 `TACET_ACCOUNTS=true`)를 켜면 가입·로그인과 워크스페이스·멤버·초대 라우트가 추가된다. 계정은 index DB에 함께 저장된다. 워크스페이스 단위의 프로젝트 권한은 아직 개발 중이다.
 
 ```bash
 tacet platform migrate                              # 계정 테이블 생성·업그레이드 (serve --accounts도 시작할 때 실행한다)
@@ -452,9 +452,16 @@ curl -H "Authorization: Bearer <token>" localhost:4318/me
 | POST | `/auth/login` | `{email, password}` 세션 토큰을 발급한다. 15분에 실패 10회가 넘으면(IP·이메일별) 429와 `Retry-After`. |
 | POST | `/auth/logout` | 현재 세션을 끝낸다(세션 토큰 필요). |
 | GET | `/me` | 로그인한 사용자(세션 토큰 필요). |
+| GET, POST | `/workspaces` | 내 워크스페이스 목록과 내 역할 / `{name, slug?}`로 만들기(만든 사람이 owner). |
+| GET, PATCH, DELETE | `/workspaces/{ws}` | 조회 / 이름·slug 변경(admin 이상) / 삭제(owner). |
+| GET | `/workspaces/{ws}/members` | 멤버와 역할. `PATCH`·`DELETE …/members/{userId}`로 역할 변경(`{role}`)·제거. |
+| POST | `/workspaces/{ws}/leave`, `/workspaces/{ws}/transfer` | 탈퇴 / `{userId}`에게 소유권 이전(owner는 admin이 된다). |
+| GET, POST | `/workspaces/{ws}/invites` | 대기 중인 초대 / `{email, role}`로 초대(admin 이상). 토큰은 이 응답에서 한 번만 준다. `DELETE …/invites/{inviteId}`로 취소. |
+| POST | `/invites/accept` | `{token}` 초대를 수락한다. 초대 이메일과 계정 이메일이 달라도 된다. |
 
 - 세션 토큰은 30일 동안 유효하고, 쓸 때마다 연장된다. 서버는 토큰의 해시만 저장한다. 만료된 세션은 시작할 때와 매시간 지운다.
 - 세션 토큰으로는 기존 `/projects` 라우트를 쓸 수 없다. 이 라우트는 여전히 서버 토큰(`TACET_API_TOKEN`)이 필요하다. 서버 토큰이 없는 로컬 서버는 예전처럼 누구에게나 열려 있다.
+- 가입하면 개인 워크스페이스가 함께 만들어지고 그 사용자가 owner가 된다. 역할은 owner > admin > member > viewer다. owner가 아니면 자기보다 낮은 역할만 부여·변경·제거할 수 있고, 마지막 owner는 강등·제거·탈퇴할 수 없다(409). 멤버가 아닌 워크스페이스는 404다. 초대 토큰은 7일 동안 한 번만 쓸 수 있고 해시만 저장된다. 자세한 명세는 `.company-os/projects/apilens-platform/api/API-0001-workspaces.md`에 있다.
 - 리버스 프록시(Render 등) 뒤에서는 `--trust-proxy`(`TACET_TRUST_PROXY=true`)를 켜야 로그인 제한이 실제 클라이언트 IP 기준으로 동작한다.
 
 ### tacet.config.json

@@ -14,6 +14,7 @@ import {
   openIndexDatabase,
   openSqlDriver,
   PlatformAccounts,
+  PlatformWorkspaces,
   renderHtml,
   renderMermaid,
   renderOntologyHtml,
@@ -24,6 +25,10 @@ import {
   type IndexDatabase,
   type SqlDriver,
   type User,
+  type WorkspaceRole,
+  WORKSPACE_ROLES,
+  WORKSPACE_SLUG,
+  WorkspaceError,
 } from "@tacet-api/core";
 import { DEFAULT_INDEX_PATH, TacetWorkspace } from "./workspace.js";
 
@@ -56,6 +61,8 @@ export interface TacetApiServer {
   database: IndexDatabase;
   /** Users and sessions, when `accounts` is on. */
   accounts?: PlatformAccounts;
+  /** Workspaces, members and invites, when `accounts` is on. */
+  workspaces?: PlatformWorkspaces;
   /** Handles one request; usable without listening, e.g. inside another HTTP framework. */
   handle(req: IncomingMessage, res: ServerResponse): Promise<void>;
   listen(port?: number, host?: string): Promise<string>;
@@ -80,6 +87,8 @@ interface Context {
   ws: TacetWorkspace;
   query: Query;
   body: Record<string, unknown>;
+  /** Path parameters by name, e.g. `ws` of `/workspaces/{ws}`, decoded and checked against `PATH_PARAMS`. */
+  params: Record<string, string>;
   principal: Principal;
   /** The client address, for throttling. */
   client: string;
@@ -92,8 +101,8 @@ interface Raw {
 }
 
 interface Route {
-  method: "GET" | "POST" | "DELETE";
-  /** Under /projects/{project} unless `global`. */
+  method: "GET" | "POST" | "PATCH" | "DELETE";
+  /** Under /projects/{project} unless `global`. `{name}` segments are path parameters, see `PATH_PARAMS`. */
   path: string;
   global?: boolean;
   summary: string;
@@ -118,6 +127,15 @@ export class HttpError extends Error {
 }
 
 const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** What each `{name}` in a route path may be; a value that does not fit is a 400 before the handler runs. */
+const PATH_PARAMS: Record<string, { pattern: RegExp; description: string; invalid: string }> = {
+  project: { pattern: PROJECT_NAME, description: "Project name in the index", invalid: "project name (letters, digits, . _ -)" },
+  ws: { pattern: WORKSPACE_SLUG, description: "Workspace slug", invalid: "workspace slug" },
+  userId: { pattern: UUID, description: "User id", invalid: "user id" },
+  inviteId: { pattern: UUID, description: "Invite id", invalid: "invite id" },
+};
 const MAX_BODY = 1024 * 1024;
 
 const graphParam: Param = { type: "string", enum: ["none", "mermaid", "json"], description: "Attach the impact graph (default none)" };
@@ -134,6 +152,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
   const writeLocks = new Map<string, Promise<unknown>>();
   let platformDb: SqlDriver | undefined;
   let accounts: PlatformAccounts | undefined;
+  let platformWorkspaces: PlatformWorkspaces | undefined;
   if (options.accounts) {
     platformDb = await openSqlDriver(location);
     try {
@@ -143,7 +162,9 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       await database.close();
       throw err;
     }
-    accounts = new PlatformAccounts(platformDb);
+    const ws = (platformWorkspaces = new PlatformWorkspaces(platformDb));
+    // Every new user gets a personal workspace in the sign-up transaction (PRD-0001 AC-2).
+    accounts = new PlatformAccounts(platformDb, undefined, { onSignUp: (user, tx) => ws.createPersonal(user, tx) });
   }
   // Expired sessions nobody presents again are deleted at start and then hourly (REVIEW-0001 R2).
   const purgeSessions = () =>
@@ -445,6 +466,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
   ];
 
   if (accounts) routes.push(...accountRoutes(accounts, loginFailures));
+  if (platformWorkspaces) routes.push(...workspaceRoutes(platformWorkspaces));
 
   const openapi = openApiDocument(options.readOnly ? routes.filter((r) => !r.write) : routes, Boolean(options.token));
 
@@ -484,7 +506,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     if (options.cors) {
       res.setHeader("Access-Control-Allow-Origin", options.cors);
       res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
       res.setHeader("Vary", "Origin");
     }
     try {
@@ -497,12 +519,13 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       if (options.readOnly && match.route.write) throw new HttpError(403, "This server is read-only: index with the CLI");
       const principal = await principalOf(req);
       admit(match.route, principal);
-      const body = req.method === "POST" ? await readJson(req) : {};
+      const body = req.method === "POST" || req.method === "PATCH" ? await readJson(req) : {};
       const query = new Query(url.searchParams);
       validate(match.route, query, body);
-      const ws = match.project === null ? (undefined as unknown as TacetWorkspace) : workspace(match.project);
-      const run = () => match.route.handle({ ws, query, body, principal, client: clientOf(req) });
-      const result = match.route.write && match.project !== null ? await serialized(match.project, run) : await run();
+      const { params } = match;
+      const ws = params.project === undefined ? (undefined as unknown as TacetWorkspace) : workspace(params.project);
+      const run = () => match.route.handle({ ws, query, body, params, principal, client: clientOf(req) });
+      const result = match.route.write && params.project !== undefined ? await serialized(params.project, run) : await run();
       return send(res, 200, result);
     } catch (err) {
       const status = statusOf(err);
@@ -517,6 +540,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     server,
     database,
     accounts,
+    workspaces: platformWorkspaces,
     handle,
     listen: (port = 4318, host = "127.0.0.1") =>
       new Promise((resolveUrl, reject) => {
@@ -572,21 +596,49 @@ class Query {
   }
 }
 
-function matchRoute(routes: Route[], method: string, path: string): { route: Route; project: string | null } | null {
-  for (const route of routes.filter((r) => r.global)) {
-    if (route.path === path && route.method === method) return { route, project: null };
+/** The full path of a route, with its `{name}` parameters: per-project routes are mounted under /projects/{project}. */
+function templateOf(route: Route): string {
+  return route.global ? route.path : `/projects/{project}${route.path}`;
+}
+
+/**
+ * The route for a request and its path parameters. Paths are compared segment by segment; where several templates fit
+ * (`/a/{x}` and `/a/b`), the one with the earliest literal segment wins. A path that fits only other methods is a 405.
+ */
+function matchRoute(routes: Route[], method: string, path: string): { route: Route; params: Record<string, string> } | null {
+  const segments = path.split("/").slice(1);
+  const fitting: Array<{ route: Route; template: string[] }> = [];
+  for (const route of routes) {
+    const template = templateOf(route).split("/").slice(1);
+    if (template.length !== segments.length) continue;
+    if (template.every((t, i) => isParam(t) || t === segments[i])) fitting.push({ route, template });
   }
-  const m = /^\/projects\/([^/]+)(\/.*)?$/.exec(path);
-  if (!m) return null;
-  const project = decodeURIComponent(m[1]);
-  if (!PROJECT_NAME.test(project)) throw new HttpError(400, `Invalid project name "${project}" (letters, digits, . _ -)`);
-  const rest = m[2] ?? "";
-  const route = routes.find((r) => !r.global && r.path === rest && r.method === method);
-  if (!route) {
-    if (routes.some((r) => !r.global && r.path === rest)) throw new HttpError(405, `${method} is not supported on ${path}`);
+  const specificity = (template: string[]) => template.map((t) => (isParam(t) ? "1" : "0")).join("");
+  fitting.sort((a, b) => specificity(a.template).localeCompare(specificity(b.template)));
+  const best = fitting.find((f) => f.route.method === method);
+  if (!best) {
+    if (fitting.length) throw new HttpError(405, `${method} is not supported on ${path}`);
     return null;
   }
-  return { route, project };
+  const params: Record<string, string> = {};
+  best.template.forEach((t, i) => {
+    if (!isParam(t)) return;
+    const name = t.slice(1, -1);
+    let value: string;
+    try {
+      value = decodeURIComponent(segments[i]);
+    } catch {
+      throw new HttpError(400, `Malformed path segment "${segments[i]}"`);
+    }
+    const param = PATH_PARAMS[name];
+    if (param && !param.pattern.test(value)) throw new HttpError(400, `Invalid ${param.invalid} "${value}"`);
+    params[name] = value;
+  });
+  return { route: best.route, params };
+}
+
+function isParam(segment: string): boolean {
+  return segment.startsWith("{") && segment.endsWith("}");
 }
 
 function validate(route: Route, query: Query, body: Record<string, unknown>): void {
@@ -612,6 +664,7 @@ function validate(route: Route, query: Query, body: Record<string, unknown>): vo
           ? Number.isInteger(value)
           : typeof value === param.type;
     if (!ok) throw new HttpError(400, `Body field \`${name}\` must be ${param.type}`);
+    if (param.enum && !param.enum.includes(value as string)) throw new HttpError(400, `\`${name}\` must be one of ${param.enum.join(", ")}`);
   }
 }
 
@@ -638,6 +691,21 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 function statusOf(err: unknown): number {
   if (err instanceof HttpError) return err.status;
   if (err instanceof AccountError) return { "invalid-email": 400, "invalid-password": 400, "email-taken": 409, "wrong-credentials": 401 }[err.code];
+  if (err instanceof WorkspaceError) {
+    return {
+      "invalid-name": 400,
+      "invalid-slug": 400,
+      "invalid-role": 400,
+      "slug-taken": 409,
+      "not-found": 404,
+      forbidden: 403,
+      "last-owner": 409,
+      "already-member": 409,
+      "invite-not-found": 404,
+      "invite-expired": 410,
+      "invite-used": 409,
+    }[err.code];
+  }
   if (!(err instanceof Error) || err.constructor !== Error) return 500;
   // The workspace reports missing things as "No frontend index …", "No Page "/x" in the index", …
   if (/^No /.test(err.message) || /not found/i.test(err.message)) return 404;
@@ -686,9 +754,19 @@ function schemaOf(param: Param): Record<string, unknown> {
 function openApiDocument(routes: Route[], secured: boolean): Record<string, unknown> {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const route of routes) {
-    const path = route.global ? route.path : `/projects/{project}${route.path}`;
+    const path = templateOf(route);
     const parameters = [
-      ...(route.global ? [] : [{ name: "project", in: "path", required: true, schema: { type: "string", pattern: PROJECT_NAME.source } }]),
+      ...path
+        .split("/")
+        .filter(isParam)
+        .map((t) => t.slice(1, -1))
+        .map((name) => ({
+          name,
+          in: "path",
+          required: true,
+          description: PATH_PARAMS[name]?.description,
+          schema: { type: "string", ...(PATH_PARAMS[name] ? { pattern: PATH_PARAMS[name].pattern.source } : {}) },
+        })),
       ...Object.entries(route.query ?? {}).map(([name, p]) => ({
         name,
         in: "query",
@@ -809,4 +887,148 @@ function accountRoutes(accounts: PlatformAccounts, failures: FailureThrottle): R
       handle: async ({ principal }) => (principal.kind === "user" ? { user: principal.user } : null),
     },
   ];
+}
+
+/**
+ * Workspaces, their members and invites (ADR-0002, API-0001). A workspace the caller is not a member of is a 404,
+ * never a 403, so its existence does not leak; members lacking the role get a 403.
+ */
+function workspaceRoutes(workspaces: PlatformWorkspaces): Route[] {
+  const role: Param = { type: "string", enum: [...WORKSPACE_ROLES], description: "owner, admin, member or viewer" };
+  const base = { global: true, access: "user", tag: "workspaces" } as const;
+  return [
+    {
+      ...base,
+      method: "GET",
+      path: "/workspaces",
+      summary: "The workspaces the logged-in user is a member of, with their role in each",
+      handle: async ({ principal }) => workspaces.listMine(userOf(principal).id),
+    },
+    {
+      ...base,
+      method: "POST",
+      path: "/workspaces",
+      summary: "Create a workspace; the caller becomes its owner",
+      body: {
+        name: { type: "string", required: true, description: "Display name, 1 to 100 characters" },
+        slug: { type: "string", description: "URL name: 3 to 40 lowercase letters, digits or hyphens (default: from the name)" },
+      },
+      handle: async ({ principal, body }) =>
+        workspaces.create(userOf(principal).id, { name: body.name as string, slug: body.slug as string | undefined }),
+    },
+    {
+      ...base,
+      method: "GET",
+      path: "/workspaces/{ws}",
+      summary: "A workspace and the caller's role in it (any member)",
+      handle: async ({ principal, params }) => workspaces.get(userOf(principal).id, params.ws),
+    },
+    {
+      ...base,
+      method: "PATCH",
+      path: "/workspaces/{ws}",
+      summary: "Rename a workspace or change its slug (admin)",
+      body: {
+        name: { type: "string", description: "New display name" },
+        slug: { type: "string", description: "New slug; the old one stops working" },
+      },
+      handle: async ({ principal, params, body }) =>
+        workspaces.update(userOf(principal).id, params.ws, { name: body.name as string | undefined, slug: body.slug as string | undefined }),
+    },
+    {
+      ...base,
+      method: "DELETE",
+      path: "/workspaces/{ws}",
+      summary: "Delete a workspace with its members, invites and projects (owner)",
+      handle: async ({ principal, params }) => {
+        await workspaces.delete(userOf(principal).id, params.ws);
+        return { ok: true };
+      },
+    },
+    {
+      ...base,
+      method: "GET",
+      path: "/workspaces/{ws}/members",
+      summary: "Members of a workspace with their roles (any member)",
+      handle: async ({ principal, params }) => workspaces.members(userOf(principal).id, params.ws),
+    },
+    {
+      ...base,
+      method: "PATCH",
+      path: "/workspaces/{ws}/members/{userId}",
+      summary: "Change a member's role: admins manage members and viewers, owners everyone; the last owner stays",
+      body: { role: { ...role, required: true } },
+      handle: async ({ principal, params, body }) =>
+        workspaces.setRole(userOf(principal).id, params.ws, params.userId, body.role as WorkspaceRole),
+    },
+    {
+      ...base,
+      method: "DELETE",
+      path: "/workspaces/{ws}/members/{userId}",
+      summary: "Remove a member (as for roles); removing yourself is leaving. The last owner cannot be removed",
+      handle: async ({ principal, params }) => {
+        await workspaces.removeMember(userOf(principal).id, params.ws, params.userId);
+        return { ok: true };
+      },
+    },
+    {
+      ...base,
+      method: "POST",
+      path: "/workspaces/{ws}/leave",
+      summary: "Leave a workspace (any member but the last owner)",
+      handle: async ({ principal, params }) => {
+        await workspaces.leave(userOf(principal).id, params.ws);
+        return { ok: true };
+      },
+    },
+    {
+      ...base,
+      method: "POST",
+      path: "/workspaces/{ws}/transfer",
+      summary: "Make another member owner and yourself admin, at once (owner); returns the members",
+      body: { userId: { type: "string", required: true, description: "The member to make owner" } },
+      handle: async ({ principal, params, body }) =>
+        workspaces.transferOwnership(userOf(principal).id, params.ws, body.userId as string),
+    },
+    {
+      ...base,
+      method: "GET",
+      path: "/workspaces/{ws}/invites",
+      summary: "Invites not accepted yet, expired ones included (admin)",
+      handle: async ({ principal, params }) => workspaces.invites(userOf(principal).id, params.ws),
+    },
+    {
+      ...base,
+      method: "POST",
+      path: "/workspaces/{ws}/invites",
+      summary: "Invite by email (admin): returns the invite token once, valid 7 days for one use; send it as the link",
+      body: { email: { type: "string", required: true, description: "Who is invited" }, role: { ...role, required: true } },
+      handle: async ({ principal, params, body }) =>
+        workspaces.createInvite(userOf(principal).id, params.ws, { email: body.email as string, role: body.role as WorkspaceRole }),
+    },
+    {
+      ...base,
+      method: "DELETE",
+      path: "/workspaces/{ws}/invites/{inviteId}",
+      summary: "Revoke a pending invite (admin)",
+      handle: async ({ principal, params }) => {
+        await workspaces.revokeInvite(userOf(principal).id, params.ws, params.inviteId);
+        return { ok: true };
+      },
+    },
+    {
+      ...base,
+      method: "POST",
+      path: "/invites/accept",
+      summary: "Join the workspace of an invite token, whatever the account's email; a member keeps a higher role",
+      body: { token: { type: "string", required: true, description: "The invite token" } },
+      handle: async ({ principal, body }) => workspaces.acceptInvite(userOf(principal).id, body.token as string),
+    },
+  ];
+}
+
+/** The logged-in user of a `user` route (`admit` has made sure there is one). */
+function userOf(principal: Principal): User {
+  if (principal.kind !== "user") throw new HttpError(401, "Log in first");
+  return principal.user;
 }

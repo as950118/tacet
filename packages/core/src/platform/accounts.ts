@@ -39,11 +39,20 @@ interface UserRow {
   created_at: string;
 }
 
+export interface PlatformAccountsOptions {
+  /**
+   * Runs in the sign-up transaction, after the user row: whatever every new user must have (their personal workspace,
+   * `PlatformWorkspaces.createPersonal`) is created with the account or not at all. Use `tx` for its queries.
+   */
+  onSignUp?(user: User, tx: SqlDriver): Promise<unknown>;
+}
+
 /** Users and their login sessions (ADR-0002), over the account tables made by `migratePlatform`. */
 export class PlatformAccounts {
   constructor(
     private readonly db: SqlDriver,
     private readonly now: () => Date = () => new Date(),
+    private readonly options: PlatformAccountsOptions = {},
   ) {}
 
   async signUp(input: { email: string; password: string; displayName?: string }): Promise<Session> {
@@ -53,13 +62,16 @@ export class PlatformAccounts {
     const passwordHash = await hashPassword(input.password);
     const user: User = { id: randomUUID(), email, displayName, createdAt: this.now().toISOString() };
     try {
-      await this.db.run("INSERT INTO users (id, email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)", [
-        user.id,
-        user.email,
-        passwordHash,
-        user.displayName,
-        user.createdAt,
-      ]);
+      await this.db.transaction(async (tx) => {
+        await tx.run("INSERT INTO users (id, email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)", [
+          user.id,
+          user.email,
+          passwordHash,
+          user.displayName,
+          user.createdAt,
+        ]);
+        await this.options.onSignUp?.(user, tx);
+      });
     } catch (err) {
       if (await this.userByEmail(email)) throw new AccountError("email-taken", "An account with this email already exists");
       throw err;
