@@ -9,7 +9,7 @@
 | Reviewer | Reviewer Agent (Claude) |
 | Date | 2026-10-14 |
 | Reviewer 권고 | **Approve with follow-ups**: Blocker 0, Major 1, Minor 5, Nit 3 |
-| Gate 결정 | **대기 (사람 승인 필요)**: 구현자와 Reviewer가 같은 모델이므로 self-approve하지 않는다. |
+| Gate 결정 | **Approved** (2026-10-14, heonjinjeong) → R1 등 후속 조치 후 QA |
 
 ## Inputs
 
@@ -82,7 +82,17 @@
 
 | Date | Approver | Decision | Note |
 |------|----------|----------|------|
-| (pending) | (pending) | Pending | 사람 승인 대기. Reviewer 권고는 Approve with follow-ups다. |
+| 2026-10-14 | heonjinjeong (Operator) | Approve | Reviewer 권고를 승인했다. Open Question 결정은 아래와 같다. |
+
+### Operator 결정 (2026-10-14)
+
+| OQ | 결정 |
+|----|------|
+| 1. admin이 다른 admin을 지정·변경할 수 있는가 | **현행 유지.** 자기보다 낮은 역할만 다룬다. admin 지정은 owner만 할 수 있다. |
+| 2. 워크스페이스가 없는 사용자 | 사용자가 **직접 하나 만들 수 있게** 한다. `POST /workspaces`는 워크스페이스가 0개여도 동작해야 하고, `/me`는 워크스페이스 보유 여부를 알려 대시보드가 생성을 안내할 수 있게 한다. GET 요청에서 자동으로 만들지는 않는다. |
+| 3. 워크스페이스 삭제 시 인덱스 정리 | TASK-0005 AC에 넣는다. |
+| 4. 만료된 초대 정리 | 매시간 도는 세션 정리에 함께 넣는다. |
+| 5. slug를 바꾸면 예전 링크가 깨짐 | **예전 slug를 별칭으로 남겨 새 slug로 연결한다.** 예전 경로는 308로 새 경로에 리다이렉트한다. 별칭은 그 워크스페이스 몫으로 예약해서 다른 워크스페이스가 가져갈 수 없다. 워크스페이스가 삭제되면 별칭도 함께 사라진다. |
 
 ## Handoff
 
