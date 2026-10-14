@@ -9,7 +9,7 @@
 | Reviewer | Reviewer Agent (Claude) |
 | Date | 2026-10-14 |
 | Reviewer 권고 | **Approve with follow-ups**: Blocker 0, Major 1, Minor 2, Nit 2 |
-| Gate 결정 | **사람 승인 대기**: 작성자와 Reviewer가 같은 에이전트이므로 self-approve 금지(`docs/agent-collaboration-rules.md` Rule 6). |
+| Gate 결정 | **Approved** (2026-10-14, heonjinjeong) → QA handoff |
 
 ## Inputs
 
@@ -44,8 +44,8 @@
 
 | # | Severity | Area | Finding | Action |
 |---|----------|------|---------|--------|
-| R1 | **Major** | Docs | DoD의 "Docs 동기화"가 미충족이다. `README.md`, `ARCHITECTURE.md`, `DEPLOY.md`에 `serve --accounts`, `--trust-proxy`, `TACET_ACCOUNTS`, `TACET_TRUST_PROXY`, `tacet platform migrate`, 계정 테이블 설명이 없다. | Backend: QA 전에 문서를 갱신한다. |
-| R2 | Minor | Data lifecycle | 만료된 세션은 그 토큰이 다시 제시될 때만 삭제된다(`accounts.ts:93`). 다시 쓰이지 않는 세션 행은 `sessions`에 영원히 남는다. | Backend: `migrate`나 서버 시작 시, 또는 주기적으로 `DELETE FROM sessions WHERE expires_at < now`를 실행한다. TASK-0004에서 같이 처리해도 된다. |
+| R1 ✅ | **Major** | Docs | DoD의 "Docs 동기화"가 미충족이다. `README.md`, `ARCHITECTURE.md`, `DEPLOY.md`에 `serve --accounts`, `--trust-proxy`, `TACET_ACCOUNTS`, `TACET_TRUST_PROXY`, `tacet platform migrate`, 계정 테이블 설명이 없다. | Backend: QA 전에 문서를 갱신한다. |
+| R2 ✅ | Minor | Data lifecycle | 만료된 세션은 그 토큰이 다시 제시될 때만 삭제된다(`accounts.ts:93`). 다시 쓰이지 않는 세션 행은 `sessions`에 영원히 남는다. | Backend: `migrate`나 서버 시작 시, 또는 주기적으로 `DELETE FROM sessions WHERE expires_at < now`를 실행한다. TASK-0004에서 같이 처리해도 된다. |
 | R3 | Minor | Observability | 가입, 로그인 실패, 스로틀 발동을 로그나 메트릭으로 남기지 않는다(coding-principles #7). | Backend: 이메일과 토큰 없이 이벤트 수만 기록한다. TASK-0008 배포 전까지 처리한다. |
 | N1 | Nit | Small Diffs | `965b9df`에 scaffolding(문서 100여 개)과 마이그레이션 코드가 한 커밋으로 섞여 있다(coding-principles #2). | 이후 커밋은 의도 하나씩으로 나눈다. |
 | N2 | Nit | Explicit Interfaces | 새 API의 스펙은 자동 생성되는 OpenAPI(`/openapi.json`)에만 있고 `projects/apilens-platform/api/`는 비어 있다. | TASK-0004 API를 설계할 때 API Spec 문서를 추가한다. |
@@ -63,4 +63,19 @@
 
 | Date | Approver | Decision | Note |
 |------|----------|----------|------|
-| — | (pending) | — | — |
+| 2026-10-14 | heonjinjeong (Operator) | Approve | Reviewer 권고(Approve with follow-ups)를 승인했다. R1·R2는 승인 직후 처리하라고 지시했다. |
+
+## Follow-up Resolution
+
+| # | Status | Resolution |
+|---|--------|------------|
+| R1 | Resolved | `README.md`에 "회원 (`--accounts`, 개발 중)" 절을 추가했다. `ARCHITECTURE.md` §7에 계정 테이블을, §12에 회원 principal을, `DEPLOY.md` §3에 회원 기능 환경변수를 추가했다. |
+| R2 | Resolved | `PlatformAccounts.purgeExpiredSessions()`를 추가했다. 서버는 `--accounts`일 때 시작 시와 매시간 이를 실행한다(`clearInterval`은 close 시). 테스트를 추가했고 전체 225개가 통과했다(PG 포함). |
+| R3 | Open → TASK-0008 | 배포 전에 인증 이벤트 수를 기록한다. |
+| N1, N2 | Open | N1: 이후 커밋은 의도 하나씩으로 나눈다. N2: TASK-0004에서 API Spec 문서를 작성한다. |
+
+## Handoff
+
+| From | To | Artifact |
+|------|-----|----------|
+| Reviewer | QA | 이 리포트(Approval Record). QA 대상: PRD-0001의 AC-1(API 부분), AC-7(기존 라우트·토큰 호환). 테넌트 격리(AC-9)는 TASK-0005 이후 TASK-0009에서 검증한다. |
