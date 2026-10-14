@@ -168,12 +168,13 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
   }
   // Expired sessions nobody presents again (REVIEW-0001 R2) and expired invites nobody accepted (REVIEW-0002 OQ-4) are
   // deleted at start and then hourly.
-  const purgeSessions = () => {
-    void accounts?.purgeExpiredSessions().catch((err: unknown) => console.error("Purging expired sessions failed:", err));
-    void platformWorkspaces?.purgeExpiredInvites().catch((err: unknown) => console.error("Purging expired invites failed:", err));
+  const purgeSessions = async () => {
+    await accounts?.purgeExpiredSessions().catch((err: unknown) => console.error("Purging expired sessions failed:", err));
+    await platformWorkspaces?.purgeExpiredInvites().catch((err: unknown) => console.error("Purging expired invites failed:", err));
   };
-  purgeSessions();
-  const purgeTimer = accounts ? setInterval(purgeSessions, 60 * 60 * 1000).unref() : undefined;
+  // The first purge finishes before the server answers, so nothing expired is served after a restart.
+  await purgeSessions();
+  const purgeTimer = accounts ? setInterval(() => void purgeSessions(), 60 * 60 * 1000).unref() : undefined;
   const loginFailures = new FailureThrottle();
 
   const workspace = (project: string) => {
