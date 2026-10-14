@@ -329,6 +329,23 @@ describe.each(backends)("PlatformWorkspaces on $name", ({ location }) => {
     expect(chosen.sort()).toEqual(["ok", "slug-taken", "slug-taken"]);
   });
 
+  it("finishes a burst of sign-ups and creates larger than the PostgreSQL pool (TASK-0011)", async () => {
+    // More transactions at once than the pool's 10 connections: if code inside a transaction used the pool instead of
+    // `tx`, or a retry ran inside the transaction that failed, this would hang or fail instead of finishing.
+    const burst = (n: number) => Array.from({ length: n }, (_, i) => i);
+    const users = await Promise.all(burst(16).map((i) => signUp(`dev@burst-${i}.example`)));
+    const personal = await Promise.all(users.map(async (u) => (await workspaces.listMine(u.id))[0].slug));
+    expect(new Set(personal).size).toBe(16);
+    expect(personal).toContain("dev");
+
+    const owner = users[0];
+    const made = await Promise.all(burst(16).map(() => workspaces.create(owner.id, { name: "Burst" })));
+    expect(new Set(made.map((w) => w.slug)).size).toBe(16);
+    const chosen = await Promise.all(burst(12).map(() => code(workspaces.create(owner.id, { name: "X", slug: "burst-chosen" }))));
+    expect(chosen.filter((c) => c === "ok")).toHaveLength(1);
+    expect(chosen.filter((c) => c === "slug-taken")).toHaveLength(11);
+  });
+
   it("refuses to transfer ownership to oneself; to another owner it only steps the caller down (REVIEW-0002 N2)", async () => {
     const owner = await signUp("owner@example.com");
     const second = await signUp("second@example.com");

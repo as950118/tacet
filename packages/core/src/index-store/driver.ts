@@ -18,8 +18,9 @@ export interface SqlDriver {
   /** Several statements without parameters (DDL). */
   exec(sql: string): Promise<void>;
   /**
-   * Runs `work` in one transaction. Transactions with the same `lock` never run at the same time, also across
-   * processes where the database supports it, so concurrent indexers of one project do not interleave.
+   * Runs `work` in one transaction. Transactions with the same `lock` on the same data (SQLite file, PostgreSQL
+   * schema) never run at the same time, also across processes where the database supports it, so concurrent indexers
+   * of one project do not interleave; other schemas in the same database do not wait for them.
    */
   transaction<T>(work: (tx: SqlDriver) => Promise<T>, lock?: string): Promise<T>;
   close(): Promise<void>;
@@ -190,8 +191,12 @@ async function openPostgres(location: string): Promise<SqlDriver> {
         const conn = await acquire();
         try {
           await conn.query("BEGIN");
-          // Released at COMMIT / ROLLBACK; serializes writers of one project across processes and machines.
-          if (lock !== undefined) await conn.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`tacet:${lock}`]);
+          // Released at COMMIT / ROLLBACK; serializes writers of one project across processes and machines. Advisory
+          // locks are database-wide, so the key names the schema: otherwise every schema in the database (another
+          // deployment, each test's own schema) would queue behind the others' migrations and writes (TASK-0011).
+          if (lock !== undefined) {
+            await conn.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`tacet:${schema}:${lock}`]);
+          }
           const result = await work(over(conn, true));
           await conn.query("COMMIT");
           return result;

@@ -14,3 +14,4 @@ Copy `docs/task-template.md` for each work item.
 | TASK-0008 | 기존 프로젝트 이관과 배포 설정 | Backlog | `./TASK-0008.md` |
 | TASK-0009 | 테넌트 격리 QA | Backlog | `./TASK-0009.md` |
 | TASK-0010 | 이메일 확인·비밀번호 재설정 | Backlog | `./TASK-0010.md` |
+| TASK-0011 | PostgreSQL 테스트 훅 10초 멈춤(전역 advisory lock) | In Review | `./TASK-0011.md` |

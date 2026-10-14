@@ -27,7 +27,7 @@ afterAll(async () => {
   await client.end();
 });
 
-describe.each(backends)("platform migrations on $name", ({ location }) => {
+describe.each(backends)("platform migrations on $name", ({ name, location }) => {
   let dir: string;
   let where: string;
   let driver: SqlDriver;
@@ -56,6 +56,25 @@ describe.each(backends)("platform migrations on $name", ({ location }) => {
   it("serializes concurrent runs", async () => {
     const results = await Promise.all([migratePlatform(driver), migratePlatform(driver)]);
     expect(results.flatMap((r) => r.applied)).toEqual(PLATFORM_MIGRATIONS.map((m) => m.version));
+  });
+
+  it.skipIf(name !== "PostgreSQL")("does not wait for migrations in another schema of the database (TASK-0011)", async () => {
+    // Another deployment (or test file) on the same database, in its own schema, whose migration is slow.
+    const other = await openSqlDriver(location(dir));
+    try {
+      const tag = `tacet_task_0011_${process.pid}_${Date.now()}`;
+      const slow: PlatformMigration = { version: 1, name: "slow", sql: () => `SELECT pg_sleep(2), '${tag}'` };
+      const holding = migratePlatform(other, [slow]).then(() => "other schema");
+      // Its migration runs once it holds its lock.
+      for (let i = 0; i < 200; i++) {
+        if ((await driver.all("SELECT 1 FROM pg_stat_activity WHERE state = 'active' AND query LIKE ?", [`%'${tag}'%`])).length) break;
+        await new Promise((done) => setTimeout(done, 10));
+      }
+      expect(await Promise.race([migratePlatform(driver).then(() => "this schema"), holding])).toBe("this schema");
+      await holding;
+    } finally {
+      await other.close();
+    }
   });
 
   it("enforces uniqueness, roles and cascades", async () => {

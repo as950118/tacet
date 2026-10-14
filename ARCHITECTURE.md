@@ -224,7 +224,8 @@ nested type / wildcard import / static import 규칙으로 프로젝트 타입�
 - `SqlDriver`: `?` placeholder SQL을 실행하는 최소 인터페이스(`all`, `run`, `exec`, `transaction(work, lock)`).
   - SQLite: `node:sqlite`(Node 22.13+ 내장, native 빌드 없음). 동기 API라 같은 프로세스의 쓰기는 파일별 mutex로 직렬화한다.
   - PostgreSQL: `pg`(처음 쓸 때 로드). 테이블은 URL의 `?schema=`(기본 `tacet`)에 만들고, 쓰기 transaction은
-    `pg_advisory_xact_lock(project)`으로 프로세스·머신 간에도 직렬화한다. 텍스트 컬럼은 `COLLATE "C"`라 정렬 결과가 SQLite와 같다.
+    `pg_advisory_xact_lock(schema + project)`으로 프로세스·머신 간에도 직렬화한다. advisory lock은 DB 전체에 걸치므로
+    키에 schema를 넣어, 같은 DB의 다른 schema는 서로 기다리지 않는다(TASK-0011). 텍스트 컬럼은 `COLLATE "C"`라 정렬 결과가 SQLite와 같다.
 
 SQL 구현(`SqlIndexStore`)은 하나이고 두 DB에서 공통으로 되는 문법만 쓴다(`ON CONFLICT … DO UPDATE`, 다중 row `INSERT`,
 `CAST(COUNT(*) AS INTEGER)`). JSON 함수 대신 조회에 필요한 값(`entities.route_path`, `component`)은 컬럼으로 둔다.
