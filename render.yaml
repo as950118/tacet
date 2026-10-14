@@ -19,3 +19,9 @@ services:
       # The free instance has 512 MB; a large project (7.5k frontend files) peaks around 410 MB with this heap cap.
       - key: NODE_OPTIONS
         value: --max-old-space-size=300
+      # Sign-up, login and workspaces (ADR-0002); the account tables are created in TACET_INDEX at start.
+      - key: TACET_ACCOUNTS
+        value: "true"
+      # Render's proxy sets X-Forwarded-For; without this every client shares one address in the login throttle.
+      - key: TACET_TRUST_PROXY
+        value: "true"
