@@ -69,11 +69,11 @@ curl -H "Authorization: Bearer $TOKEN" https://tacet-api.onrender.com/projects
 
 Docker 이미지라서 다른 호스트(Fly.io, Railway, Koyeb, Cloud Run 등)에서도 같은 환경변수로 실행된다.
 
-**회원 기능(선택, 개발 중):** Environment에 `TACET_ACCOUNTS=true`와 `TACET_TRUST_PROXY=true`를 추가하면 `/auth/*`, `/me`가 열린다.
+**회원 기능 (켜져 있음, 2026-10-14부터):** Blueprint(`render.yaml`)에 `TACET_ACCOUNTS=true`와 `TACET_TRUST_PROXY=true`가 들어 있어 `/auth/*`, `/me`, `/workspaces`가 열려 있다. 끄려면 `render.yaml`에서 `TACET_ACCOUNTS`를 지우거나 Environment에서 `false`로 바꾼다.
 - 계정 테이블은 시작할 때 같은 `TACET_INDEX` DB에 만들어진다. 미리 만들려면 로컬에서 `tacet platform migrate`를 실행한다.
 - `TACET_TRUST_PROXY`는 Render 프록시가 붙이는 `X-Forwarded-For`에서 클라이언트 IP를 읽어 로그인 제한에 쓰게 한다.
 - 이 라우트들은 읽기 전용 모드에서도 동작한다. 계정만 쓰고 index는 건드리지 않기 때문이다.
-- 대시보드 로그인(TASK-0006)이 생기기 전까지는 켜지 않아도 된다.
+- 대시보드 로그인 화면(TASK-0006)은 아직 없다. 지금은 API로만 가입하고 로그인할 수 있다.
 
 로컬에서 이미지를 확인하려면:
 
