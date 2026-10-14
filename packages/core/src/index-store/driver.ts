@@ -59,6 +59,8 @@ function openSqlite(path: string): SqlDriver {
   const db = new DatabaseSync(file);
   // Another process (e.g. an MCP server next to a CLI run) may be writing; wait for it rather than fail.
   db.exec("PRAGMA busy_timeout = 5000");
+  // Off by default in SQLite; the account tables rely on them (the index tables have none).
+  db.exec("PRAGMA foreign_keys = ON");
   const params = (values: SqlValue[] = []) => values as SQLInputValue[];
   const driver: SqlDriver = {
     dialect: "sqlite",

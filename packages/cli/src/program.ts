@@ -4,7 +4,9 @@ import { Command, Option } from "commander";
 import {
   attachGraph,
   mergeGraphs,
+  migratePlatform,
   openIndexDatabase,
+  openSqlDriver,
   renderHtml,
   renderMermaid,
   renderOntologyHtml,
@@ -310,6 +312,20 @@ export function buildProgram(): Command {
       }
     });
 
+  const platform = program.command("platform").description("Accounts and workspaces stored next to the index");
+  platform
+    .command("migrate")
+    .description("Create or upgrade the account and workspace tables in the index database")
+    .action(async () => {
+      const driver = await openSqlDriver(program.opts<{ index: string }>().index);
+      try {
+        const { applied, version } = await migratePlatform(driver);
+        emit(applied.length ? `Applied account migrations ${applied.join(", ")} in ${driver.location} (now at ${version})` : `Account tables in ${driver.location} are up to date (${version})`);
+      } finally {
+        await driver.close();
+      }
+    });
+
   program
     .command("snapshot")
     .description("Precompute every page's APIs and every endpoint's usage for fast reads (index and extract-backend do it too)")
@@ -329,7 +345,9 @@ export function buildProgram(): Command {
     .option("--allow-dir <dirs...>", "directories the indexing endpoints may read (default: the current directory)")
     .option("--cors <origin>", "Access-Control-Allow-Origin for browser clients")
     .option("--read-only", "only the query routes: no indexing or deleting over HTTP ($TACET_READ_ONLY=true)")
-    .action(async (opts: { port: number; host: string; token?: string; allowDir?: string[]; cors?: string; readOnly?: boolean }) => {
+    .option("--accounts", "sign-up, login and sessions, stored in the index database ($TACET_ACCOUNTS=true)")
+    .option("--trust-proxy", "take client addresses from X-Forwarded-For, behind a reverse proxy ($TACET_TRUST_PROXY=true)")
+    .action(async (opts: { port: number; host: string; token?: string; allowDir?: string[]; cors?: string; readOnly?: boolean; accounts?: boolean; trustProxy?: boolean }) => {
       if (!isLoopback(opts.host) && !opts.token) {
         throw new Error(`Listening on ${opts.host} exposes the index and indexing to the network: set --token or $TACET_API_TOKEN`);
       }
@@ -342,9 +360,11 @@ export function buildProgram(): Command {
         allowDirs: opts.allowDir,
         cors: opts.cors,
         readOnly,
+        accounts: opts.accounts ?? process.env.TACET_ACCOUNTS === "true",
+        trustProxy: opts.trustProxy ?? process.env.TACET_TRUST_PROXY === "true",
       });
       const url = await api.listen(opts.port, opts.host);
-      console.log(`Tacet API on ${url} (index ${api.database.location}${opts.token ? ", bearer token required" : ""}${readOnly ? ", read-only" : ""})`);
+      console.log(`Tacet API on ${url} (index ${api.database.location}${opts.token ? ", bearer token required" : ""}${readOnly ? ", read-only" : ""}${api.accounts ? ", accounts" : ""})`);
       console.log(`  ${url}/openapi.json   ${url}/projects   ${url}/projects/<name>/pages`);
       const stop = () => void api.close().finally(() => process.exit(0));
       process.once("SIGINT", stop);

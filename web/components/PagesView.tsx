@@ -58,7 +58,7 @@ export function PagesView({ project, pages }: { project: string; pages: PageRow[
                 <span className="mono">{a.api}</span>
                 {a.fields > 0 && <span className="chip">필드 {a.fields}</span>}
                 {a.common && <span className="chip">공통</span>}
-                {a.status && a.status !== "ok" && <span className="chip">{a.status}</span>}
+                {a.status && a.status !== "matched" && <span className="chip">{a.status}</span>}
               </div>
             ))}
           </div>
