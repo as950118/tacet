@@ -5,10 +5,15 @@ import type { AddressInfo } from "node:net";
 import { resolve, sep } from "node:path";
 import { gzipSync } from "node:zlib";
 import {
+  AccountError,
   attachGraph,
+  FailureThrottle,
   findEntities,
   mergeGraphs,
+  migratePlatform,
   openIndexDatabase,
+  openSqlDriver,
+  PlatformAccounts,
   renderHtml,
   renderMermaid,
   renderOntologyHtml,
@@ -17,6 +22,8 @@ import {
   type GraphAttachment,
   type ImpactGraph,
   type IndexDatabase,
+  type SqlDriver,
+  type User,
 } from "@tacet-api/core";
 import { DEFAULT_INDEX_PATH, TacetWorkspace } from "./workspace.js";
 
@@ -35,11 +42,20 @@ export interface TacetApiServerOptions {
   cors?: string;
   /** Only the query routes: no indexing or deleting, e.g. on a host the index is filled into from elsewhere. */
   readOnly?: boolean;
+  /**
+   * Accounts (ADR-0002): sign-up, login and sessions, stored in the index database. Users authenticate with their
+   * session token; the `token` above stays the machine credential for the CLI, CI and MCP.
+   */
+  accounts?: boolean;
+  /** Take the client address from X-Forwarded-For (behind a proxy such as Render's), for login throttling. */
+  trustProxy?: boolean;
 }
 
 export interface TacetApiServer {
   server: Server;
   database: IndexDatabase;
+  /** Users and sessions, when `accounts` is on. */
+  accounts?: PlatformAccounts;
   /** Handles one request; usable without listening, e.g. inside another HTTP framework. */
   handle(req: IncomingMessage, res: ServerResponse): Promise<void>;
   listen(port?: number, host?: string): Promise<string>;
@@ -55,10 +71,18 @@ interface Param {
   enum?: string[];
 }
 
+/**
+ * Who is calling: the holder of the server token (or anyone, when no token is set), a logged-in user, or nobody.
+ */
+type Principal = { kind: "machine" } | { kind: "user"; user: User; token: string } | { kind: "anonymous" };
+
 interface Context {
   ws: TacetWorkspace;
   query: Query;
   body: Record<string, unknown>;
+  principal: Principal;
+  /** The client address, for throttling. */
+  client: string;
 }
 
 /** A response other than JSON. */
@@ -78,6 +102,8 @@ interface Route {
   body?: Record<string, Param>;
   /** Writes the index: serialized per project. */
   write?: boolean;
+  /** Who may call it: anyone, a logged-in user, or (the default) the machine token holder. */
+  access?: "public" | "user" | "machine";
   handle(ctx: Context): Promise<unknown>;
 }
 
@@ -85,6 +111,7 @@ export class HttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly headers: Record<string, string> = {},
   ) {
     super(message);
   }
@@ -105,6 +132,20 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
   const allowDirs = (options.allowDirs?.length ? options.allowDirs : [process.cwd()]).map((d) => canonical(resolve(d)));
   const workspaces = new Map<string, TacetWorkspace>();
   const writeLocks = new Map<string, Promise<unknown>>();
+  let platformDb: SqlDriver | undefined;
+  let accounts: PlatformAccounts | undefined;
+  if (options.accounts) {
+    platformDb = await openSqlDriver(location);
+    try {
+      await migratePlatform(platformDb);
+    } catch (err) {
+      await platformDb.close();
+      await database.close();
+      throw err;
+    }
+    accounts = new PlatformAccounts(platformDb);
+  }
+  const loginFailures = new FailureThrottle();
 
   const workspace = (project: string) => {
     let ws = workspaces.get(project);
@@ -155,12 +196,14 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       method: "GET",
       path: "/health",
       global: true,
+      access: "public",
       tag: "server",
       summary: "Liveness, version and index database",
       handle: async () => ({
         status: "ok",
         version: VERSION,
         readOnly: Boolean(options.readOnly),
+        accounts: Boolean(accounts),
         index: { dialect: database.dialect, location: database.location },
       }),
     },
@@ -396,14 +439,40 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     },
   ];
 
+  if (accounts) routes.push(...accountRoutes(accounts, loginFailures));
+
   const openapi = openApiDocument(options.readOnly ? routes.filter((r) => !r.write) : routes, Boolean(options.token));
 
-  const authorized = (req: IncomingMessage): boolean => {
-    if (!options.token) return true;
+  const principalOf = async (req: IncomingMessage): Promise<Principal> => {
     const header = req.headers.authorization ?? "";
-    const given = Buffer.from(header.startsWith("Bearer ") ? header.slice(7) : "");
-    const expected = Buffer.from(options.token);
-    return given.length === expected.length && timingSafeEqual(given, expected);
+    const bearer = header.startsWith("Bearer ") ? header.slice(7) : "";
+    if (options.token && bearer) {
+      const given = Buffer.from(bearer);
+      const expected = Buffer.from(options.token);
+      if (given.length === expected.length && timingSafeEqual(given, expected)) return { kind: "machine" };
+    }
+    if (accounts && bearer) {
+      const user = await accounts.authenticate(bearer);
+      if (user) return { kind: "user", user, token: bearer };
+    }
+    // Without a token the server is open (it only listens on loopback then), as before accounts existed.
+    return options.token ? { kind: "anonymous" } : { kind: "machine" };
+  };
+
+  const admit = (route: Route, principal: Principal): void => {
+    const access = route.access ?? "machine";
+    if (access === "public") return;
+    if (access === "user" ? principal.kind === "user" : principal.kind === "machine" || !options.token) return;
+    throw new HttpError(
+      401,
+      access === "user" ? "Log in first: send the session token as `Authorization: Bearer <token>`" : "Missing or wrong bearer token",
+      { "WWW-Authenticate": "Bearer" },
+    );
+  };
+
+  const clientOf = (req: IncomingMessage): string => {
+    const forwarded = options.trustProxy ? String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() : "";
+    return forwarded || req.socket.remoteAddress || "unknown";
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -421,20 +490,19 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       const match = matchRoute(routes, req.method ?? "GET", path);
       if (!match) throw new HttpError(404, `No route ${req.method} ${path}; see GET /openapi.json`);
       if (options.readOnly && match.route.write) throw new HttpError(403, "This server is read-only: index with the CLI");
-      if (match.route.path !== "/health" && !authorized(req)) {
-        res.setHeader("WWW-Authenticate", "Bearer");
-        throw new HttpError(401, "Missing or wrong bearer token");
-      }
+      const principal = await principalOf(req);
+      admit(match.route, principal);
       const body = req.method === "POST" ? await readJson(req) : {};
       const query = new Query(url.searchParams);
       validate(match.route, query, body);
       const ws = match.project === null ? (undefined as unknown as TacetWorkspace) : workspace(match.project);
-      const run = () => match.route.handle({ ws, query, body });
+      const run = () => match.route.handle({ ws, query, body, principal, client: clientOf(req) });
       const result = match.route.write && match.project !== null ? await serialized(match.project, run) : await run();
       return send(res, 200, result);
     } catch (err) {
       const status = statusOf(err);
       if (status >= 500) console.error(err);
+      if (err instanceof HttpError) for (const [name, value] of Object.entries(err.headers)) res.setHeader(name, value);
       return send(res, status, { error: (err as Error).message });
     }
   };
@@ -443,6 +511,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
   return {
     server,
     database,
+    accounts,
     handle,
     listen: (port = 4318, host = "127.0.0.1") =>
       new Promise((resolveUrl, reject) => {
@@ -457,6 +526,7 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
       await new Promise<void>((done) => (server.listening ? server.close(() => done()) : done()));
       server.closeAllConnections?.();
       await database.close();
+      await platformDb?.close();
     },
   };
 }
@@ -561,6 +631,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 
 function statusOf(err: unknown): number {
   if (err instanceof HttpError) return err.status;
+  if (err instanceof AccountError) return { "invalid-email": 400, "invalid-password": 400, "email-taken": 409, "wrong-credentials": 401 }[err.code];
   if (!(err instanceof Error) || err.constructor !== Error) return 500;
   // The workspace reports missing things as "No frontend index …", "No Page "/x" in the index", …
   if (/^No /.test(err.message) || /not found/i.test(err.message)) return 404;
@@ -643,7 +714,7 @@ function openApiDocument(routes: Route[], secured: boolean): Record<string, unkn
         tags: [route.tag],
         parameters,
         ...body,
-        ...(route.path === "/health" || !secured ? { security: [] } : {}),
+        ...(route.access === "public" || (!secured && route.access !== "user") ? { security: [] } : {}),
         responses: {
           "200": { description: "OK" },
           "400": { description: "Bad request", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
@@ -652,6 +723,7 @@ function openApiDocument(routes: Route[], secured: boolean): Record<string, unkn
       },
     };
   }
+  secured ||= routes.some((r) => r.access === "user");
   return {
     openapi: "3.1.0",
     info: {
@@ -666,4 +738,69 @@ function openApiDocument(routes: Route[], secured: boolean): Record<string, unkn
     },
     security: secured ? [{ bearer: [] }] : [],
   };
+}
+
+/** Sign-up, login, logout and the current user (ADR-0002). */
+function accountRoutes(accounts: PlatformAccounts, failures: FailureThrottle): Route[] {
+  const credentials: Record<string, Param> = {
+    email: { type: "string", required: true, description: "Email address" },
+    password: { type: "string", required: true, description: "Password" },
+  };
+  return [
+    {
+      method: "POST",
+      path: "/auth/signup",
+      global: true,
+      access: "public",
+      tag: "accounts",
+      summary: "Create an account and log in: returns a session token",
+      body: { ...credentials, displayName: { type: "string", description: "Name shown to other members" } },
+      handle: async ({ body }) =>
+        accounts.signUp({ email: body.email as string, password: body.password as string, displayName: body.displayName as string | undefined }),
+    },
+    {
+      method: "POST",
+      path: "/auth/login",
+      global: true,
+      access: "public",
+      tag: "accounts",
+      summary: "Log in: returns a session token to send as `Authorization: Bearer <token>`",
+      body: credentials,
+      handle: async ({ body, client }) => {
+        // Per address (one client guessing many accounts) and per email (many clients guessing one account).
+        const keys = [`ip:${client}`, `email:${String(body.email).trim().toLowerCase()}`];
+        const wait = failures.retryAfter(keys);
+        if (wait) throw new HttpError(429, "Too many failed logins: try again later", { "Retry-After": String(wait) });
+        try {
+          const session = await accounts.logIn({ email: body.email as string, password: body.password as string });
+          failures.succeed(keys.slice(1));
+          return session;
+        } catch (err) {
+          if (err instanceof AccountError) failures.fail(keys);
+          throw err;
+        }
+      },
+    },
+    {
+      method: "POST",
+      path: "/auth/logout",
+      global: true,
+      access: "user",
+      tag: "accounts",
+      summary: "End this session",
+      handle: async ({ principal }) => {
+        if (principal.kind === "user") await accounts.logOut(principal.token);
+        return { ok: true };
+      },
+    },
+    {
+      method: "GET",
+      path: "/me",
+      global: true,
+      access: "user",
+      tag: "accounts",
+      summary: "The logged-in user",
+      handle: async ({ principal }) => (principal.kind === "user" ? { user: principal.user } : null),
+    },
+  ];
 }
