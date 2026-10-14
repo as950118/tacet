@@ -2,6 +2,7 @@ export * from "./ir/index.js";
 export * from "./config.js";
 export * from "./path.js";
 export * from "./index-store/index.js";
+export * from "./platform/index.js";
 export * from "./extractor/index.js";
 export * from "./ai/index.js";
 export * from "./analysis/index.js";

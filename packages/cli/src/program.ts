@@ -4,7 +4,9 @@ import { Command, Option } from "commander";
 import {
   attachGraph,
   mergeGraphs,
+  migratePlatform,
   openIndexDatabase,
+  openSqlDriver,
   renderHtml,
   renderMermaid,
   renderOntologyHtml,
@@ -307,6 +309,20 @@ export function buildProgram(): Command {
         emit(projects.map((p) => `${p.name}  frontend ${when(p.frontend)}  backend ${when(p.backend)}`).join("\n"));
       } finally {
         await database.close();
+      }
+    });
+
+  const platform = program.command("platform").description("Accounts and workspaces stored next to the index");
+  platform
+    .command("migrate")
+    .description("Create or upgrade the account and workspace tables in the index database")
+    .action(async () => {
+      const driver = await openSqlDriver(program.opts<{ index: string }>().index);
+      try {
+        const { applied, version } = await migratePlatform(driver);
+        emit(applied.length ? `Applied account migrations ${applied.join(", ")} in ${driver.location} (now at ${version})` : `Account tables in ${driver.location} are up to date (${version})`);
+      } finally {
+        await driver.close();
       }
     });
 
