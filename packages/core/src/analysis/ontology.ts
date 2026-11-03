@@ -485,12 +485,20 @@ export function buildOntology(model: ProjectModel, options: OntologyOptions = {}
   const commonApis = markCommonApis(entities, pages, model.config.commonApis);
   relatePages(pages);
 
-  const sorted = [...entities.values()].sort(
-    (a, b) => CLASS_ORDER.indexOf(a.class) - CLASS_ORDER.indexOf(b.class) || a.label.localeCompare(b.label) || a.id.localeCompare(b.id),
-  );
+  const sorted = [...entities.values()].sort(compareEntities);
   const stats: Ontology["stats"] = { entities: {}, triples: kept.length, inferred: kept.filter((t) => t.inferred).length };
   for (const e of sorted) stats.entities[e.class] = (stats.entities[e.class] ?? 0) + 1;
   return { schema: ONTOLOGY_SCHEMA, entities: sorted, triples: kept, pages, stats, commonApis, rootDir: model.frontend.rootDir };
+}
+
+/** The order entities are listed in: by class, then label, then id. */
+export function compareEntities(a: OntologyEntity, b: OntologyEntity): number {
+  return CLASS_ORDER.indexOf(a.class) - CLASS_ORDER.indexOf(b.class) || a.label.localeCompare(b.label) || a.id.localeCompare(b.id);
+}
+
+/** The order pages are listed in: by route (pages without one last), then component. */
+export function comparePages(a: { route: string | null; component: string }, b: { route: string | null; component: string }): number {
+  return (a.route ?? "\uffff").localeCompare(b.route ?? "\uffff") || a.component.localeCompare(b.component);
 }
 
 const CLASS_ORDER: OntologyClass[] = [
@@ -598,7 +606,7 @@ function inferPageApis(
       apis: list.map(({ viaIds: _ids, ...rest }) => rest),
     });
   }
-  pages.sort((a, b) => (a.route ?? "\uffff").localeCompare(b.route ?? "\uffff") || a.component.localeCompare(b.component));
+  pages.sort(comparePages);
   return { pages, uses };
 }
 

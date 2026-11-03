@@ -7,6 +7,7 @@ import {
   mergeUsageReports,
   buildOntology,
   checkContract,
+  focusFromRelations,
   focusOntology,
   pagesByApi,
   verifyChangeReport,
@@ -219,6 +220,8 @@ export class TacetWorkspace {
   /** Parsed snapshots, kept while the index they were computed from is unchanged. */
   private readonly snapshots = new Map<SnapshotKind, { fingerprint: string; value: unknown }>();
   private readonly siblings = new Map<string, TacetWorkspace>();
+  /** Frontend functions the pruned ontology leaves out, for the relations written at `builtAt`. */
+  private unrelatedCache: { builtAt: string; ids: Set<string> } | null = null;
 
   /**
    * @param index a SQLite file path or a `postgres://` URL (tables go to the `tacet` schema, or `?schema=name`)
@@ -539,8 +542,32 @@ export class TacetWorkspace {
 
   /** Pages, components, functions, APIs, controllers and DTOs, and how they connect (subject–predicate–object). */
   async ontology(options: OntologyQueryOptions = {}): Promise<Ontology> {
+    if (options.focus && !options.includeUnrelated) {
+      const stored = await this.storedFocus(options);
+      if (stored) return stored;
+    }
     const ontology = buildOntology(await this.model(), options);
     return options.focus ? focusOntology(ontology, options.focus, options.depth) : ontology;
+  }
+
+  /**
+   * The neighborhood of `options.focus` read from the stored relations, which is a few queries instead of loading and
+   * analyzing the whole project. Undefined when the relations are missing or were built with another config.
+   */
+  private async storedFocus(options: OntologyQueryOptions): Promise<Ontology | undefined> {
+    return this.withStore(async (store) => {
+      const config = this.configPath ? loadConfig(this.configPath) : await store.readConfig();
+      if (!(await store.hasRelations()) || !(await store.relationsBuiltWith(config))) return undefined;
+      const builtAt = (await store.getMeta("relations.generatedAt")) ?? "";
+      if (this.unrelatedCache?.builtAt !== builtAt) {
+        this.unrelatedCache = { builtAt, ids: new Set(await store.unrelatedFrontendIds()) };
+      }
+      return focusFromRelations(store, options.focus!, {
+        depth: options.depth,
+        includeFiles: options.includeFiles,
+        unrelated: this.unrelatedCache.ids,
+      });
+    });
   }
 
   /**

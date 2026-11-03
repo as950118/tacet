@@ -239,6 +239,18 @@ export async function createTacetApiServer(options: TacetApiServerOptions = {}):
     },
     {
       method: "GET",
+      path: "/health/db",
+      global: true,
+      access: "public",
+      tag: "server",
+      summary: "Liveness plus one cheap query on the index database (keeps a paused-on-idle host such as Supabase free awake)",
+      handle: async () => {
+        await database.listProjects();
+        return { status: "ok" };
+      },
+    },
+    {
+      method: "GET",
       path: "/projects",
       global: true,
       tag: "projects",
