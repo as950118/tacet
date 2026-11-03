@@ -57,6 +57,9 @@ tacet projects
 3. 포트는 Render가 주는 `$PORT`를 서버가 그대로 쓴다.
 
 **Free 플랜 제약:** 15분 동안 요청이 없으면 서비스가 잠든다. 첫 요청은 깨어나는 데 1분 정도 걸리고, 대시보드도 그동안 기다린다.
+Supabase free 프로젝트도 일주일 동안 DB 활동이 없으면 일시 중지된다.
+
+**유휴 방지:** `.github/workflows/keepalive.yml`이 10분마다 `GET /health/db`를 호출한다. 이 라우트는 토큰 없이 열려 있고 index DB에 쿼리를 한 번 보내므로, 한 번의 호출로 Render와 Supabase를 모두 깨어 있게 한다. 저장소 **Settings → Secrets and variables → Actions → Variables**에 `TACET_API_URL`(예: `https://tacet-api.onrender.com`)을 넣어야 동작한다. 월 750시간 한도 안에서 24시간 켜 두려면 Render 인스턴스 한 개만 써야 한다.
 
 대형 프로젝트의 `/unused`·`/pages`는 요청할 때 계산한다. 그래서 첫 조회는 5~10초 걸린다. 이후 같은 프로젝트를 조회할 때는 메모리에 남은 모델을 다시 쓴다.
 
