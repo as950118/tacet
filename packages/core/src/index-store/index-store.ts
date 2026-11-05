@@ -103,6 +103,21 @@ export interface IndexStore {
   findEntitiesByKey(key: string, cls?: string): Promise<OntologyEntity[]>;
   /** Relations matching every given part (entity ids), e.g. { predicate: "renders", object: "fn:..." }. */
   queryRelations(query?: RelationQuery): Promise<OntologyTriple[]>;
+  /** Entities by id (unknown ids are skipped). */
+  getEntities(ids: string[]): Promise<OntologyEntity[]>;
+  /** The entities `focus` names, as `findEntities` picks them from a whole ontology: exact id / label, else substring. */
+  findFocusSeeds(query: string, includeFiles?: boolean): Promise<OntologyEntity[]>;
+  /** Every stored relation with one of `ids` at either end. */
+  relationsAround(ids: string[]): Promise<OntologyTriple[]>;
+  /** Every stored relation whose subject and object are both in `ids`. */
+  relationsAmong(ids: string[]): Promise<OntologyTriple[]>;
+  /**
+   * Ids of frontend functions a default (pruned) ontology leaves out: no path to an API or DTO field, and not a page's
+   * component. The stored relations keep them, so readers of the pruned view subtract these.
+   */
+  unrelatedFrontendIds(): Promise<string[]>;
+  /** The stored `commonApis` rule and frontend root of the relations (null when none were written). */
+  relationsInfo(): Promise<{ commonApis: Ontology["commonApis"] | null; rootDir: string | null }>;
   /** Pages using an API (endpoint entity id), or the APIs a page uses (page entity id). */
   pageApis(by: { page?: string; endpoint?: string }): Promise<StoredPageApi[]>;
   /** Pages sharing the most non-common APIs with a page (page entity id). */
@@ -548,6 +563,88 @@ class SqlIndexStore implements IndexStore {
     return this.rows(`SELECT json FROM relations WHERE ${where.join(" AND ")} ORDER BY subject, predicate, object${limit}`, ...params);
   }
 
+  async getEntities(ids: string[]): Promise<OntologyEntity[]> {
+    const found: OntologyEntity[] = [];
+    for (const chunk of chunks(ids)) {
+      found.push(...(await this.rows<OntologyEntity>(`SELECT json FROM entities WHERE project = ? AND id IN (${marks(chunk)})`, ...chunk)));
+    }
+    return found;
+  }
+
+  async findFocusSeeds(query: string, includeFiles = true): Promise<OntologyEntity[]> {
+    const exact = await this.rows<OntologyEntity>(
+      `SELECT json FROM entities WHERE project = ? AND (id = ? OR label = ?)${includeFiles ? "" : " AND class <> 'File'"} ORDER BY id`,
+      query,
+      query,
+    );
+    if (exact.length) return exact;
+    // Matched here rather than with LIKE: lower() differs between SQLite (ASCII only) and PostgreSQL.
+    const q = query.toLowerCase();
+    const all = await this.db.all<{ id: string; label: string; class: string }>("SELECT id, label, class FROM entities WHERE project = ?", [this.project]);
+    const ids = all.filter((e) => e.class !== "File" && (e.label.toLowerCase().includes(q) || e.id.toLowerCase().includes(q))).map((e) => e.id);
+    return this.getEntities(ids);
+  }
+
+  async relationsAround(ids: string[]): Promise<OntologyTriple[]> {
+    const found = new Map<string, OntologyTriple>();
+    for (const chunk of chunks(ids)) {
+      const rows = await this.rows<OntologyTriple>(
+        // Two selects rather than OR: each walks its own index (the primary key by subject, idx_relations_object).
+        `SELECT json FROM relations WHERE project = ? AND subject IN (${marks(chunk)})
+         UNION SELECT json FROM relations WHERE project = ? AND object IN (${marks(chunk)})`,
+        ...chunk,
+        this.project,
+        ...chunk,
+      );
+      for (const t of rows) found.set(`${t.subject}\0${t.predicate}\0${t.object}`, t);
+    }
+    return [...found.values()];
+  }
+
+  async relationsAmong(ids: string[]): Promise<OntologyTriple[]> {
+    const found: OntologyTriple[] = [];
+    for (const subjects of chunks(ids)) {
+      for (const objects of chunks(ids)) {
+        found.push(
+          ...(await this.rows<OntologyTriple>(
+            `SELECT json FROM relations WHERE project = ? AND subject IN (${marks(subjects)}) AND object IN (${marks(objects)})`,
+            ...subjects,
+            ...objects,
+          )),
+        );
+      }
+    }
+    return found;
+  }
+
+  async unrelatedFrontendIds(): Promise<string[]> {
+    // SQLite's planner scans the whole relations table for every step of the recursion (5 s for 10k relations) unless
+    // it is told to walk the index on the object column; PostgreSQL needs no hint (and has no such syntax).
+    const step = this.db.dialect === "sqlite"
+      ? "up CROSS JOIN relations r INDEXED BY idx_relations_object ON r.project = ? AND r.object = up.id WHERE"
+      : "relations r JOIN up ON r.object = up.id WHERE r.project = ? AND";
+    const rows = await this.db.all<{ id: string }>(
+      `WITH RECURSIVE up(id) AS (
+         SELECT id FROM entities WHERE project = ? AND class IN ('Endpoint', 'DtoField')
+         UNION
+         SELECT r.subject FROM ${step} r.predicate IN ('calls', 'renders', 'requests', 'reads')
+       )
+       SELECT id FROM entities
+       WHERE project = ? AND class IN ('Component', 'Hook', 'ApiClient', 'Function')
+         AND id NOT IN (SELECT id FROM up)
+         AND id NOT IN (SELECT object FROM relations WHERE project = ? AND predicate = 'showsComponent')`,
+      [this.project, this.project, this.project, this.project],
+    );
+    return rows.map((r) => r.id);
+  }
+
+  async relationsInfo(): Promise<{ commonApis: Ontology["commonApis"] | null; rootDir: string | null }> {
+    return {
+      commonApis: JSON.parse((await this.getMeta("relations.commonApis")) ?? "null") as Ontology["commonApis"] | null,
+      rootDir: await this.getMeta("rootDir"),
+    };
+  }
+
   async pageApis(by: { page?: string; endpoint?: string }): Promise<StoredPageApi[]> {
     const [column, value] = by.page !== undefined ? ["page", by.page] : ["endpoint", by.endpoint ?? ""];
     const rows = await this.db.all<{
@@ -612,6 +709,15 @@ class SqlIndexStore implements IndexStore {
     };
   }
 }
+
+/** Ids per query, below every driver's limit on bound parameters. */
+function chunks<T>(items: T[], size = 400): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+const marks = (items: unknown[]) => items.map(() => "?").join(", ");
 
 /** Last occurrence wins, like the per-row upserts the store used to do; keeps first-seen order. */
 function unique<T>(items: T[], key: (item: T) => string): T[] {

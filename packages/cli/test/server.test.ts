@@ -73,6 +73,10 @@ describe.each(backends)("Tacet HTTP API on $name", ({ location }) => {
     expect(health.body.status).toBe("ok");
     expect(JSON.stringify(health.body)).not.toContain("tacet:tacet@");
 
+    const healthDb = await call("GET", "/health/db", undefined, null);
+    expect(healthDb.status).toBe(200);
+    expect(healthDb.body).toEqual({ status: "ok" });
+
     const openapi = await call("GET", "/openapi.json", undefined, null);
     expect(openapi.body.openapi).toBe("3.1.0");
     expect(Object.keys(openapi.body.paths)).toEqual(
